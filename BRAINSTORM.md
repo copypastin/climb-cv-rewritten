@@ -6,9 +6,9 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 
 ---
 
-## 0. SESSION HANDOFF — read this first (2026-08-07, 03:41)
+## 0. SESSION HANDOFF — read this first (2026-08-07)
 
-Work stopped mid-revision when credit ran out. **Everything is committed; nothing is lost.** Start here.
+**Everything is committed; nothing is lost.** Design phase, late stage. **No code exists yet** — 0 `.py` files, by design: §7 gates implementation behind a review pass. Start here.
 
 ### Where things stand
 
@@ -18,10 +18,12 @@ Work stopped mid-revision when credit ran out. **Everything is committed; nothin
 | `ca1d564` | `design/reviews/guardian-01.md` — 5 blocking (B1–B5), 18 should-fix (S6–S23), naming rulings, verdicts on #14/#15 |
 | `d1e8345` | `plugins-and-config`'s `first-party-plugins.md` + `config.md` — friction registers F-1..F-16 (§10) and C-1..C-8 (§11) |
 | `156739a` | Review convergence recorded here |
-| `2b7e138` | **Clean pre-revision state.** C-6 accepted, naming rulings, #14/#15, T1/T2 coupling |
-| `372673c` | **PARTIAL revision pass — current HEAD.** +2098/−261 across 5 files |
+| `2b7e138` | **Clean pre-revision state** — diff against this to see everything the revision changed |
+| `372673c` | Partial revision (interrupted): 5 files, +2098/−261 |
+| `2a40560` | Revision completed — `config-contract.md` finished, `design/revision-01.md` audit trail added |
+| `f1e2f2a` | Decisions #18–#23 recorded here |
 
-### What the interrupted revision pass did and did not do
+### Where the revision pass got to
 
 **Revision pass complete as of `2a40560`**, with one concentrated gap. `design/revision-01.md` is the per-finding audit trail: **48 addressed, 2 partial, 6 declined, 3 deferred, 1 not reached.** `config-contract.md` is finished (C-1..C-8 plus all four of `config.md` §13's asks, all accepted). New proposed Decisions #18–#23 are in §4 above.
 
