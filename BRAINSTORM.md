@@ -1,6 +1,6 @@
 # climb-cv Plugin Architecture — Brainstorm Summary
 
-Status: **architecture locked (Decision #9); all 8 design sections written; Decisions #11–#23 accepted. Guardian pass 02 done (`cf8a5eb`): NOT lockable — 2 blocking findings, both mechanical, ~a day's work. No third review needed; fix those two and proceed.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
+Status: **DESIGN PHASE COMPLETE. Architecture locked (Decision #9); Decisions #11–#24 accepted; two guardian passes done; both blocking findings closed (blocker 1 verified by execution). Guardian-02's exit condition is met — the API surfaces are lockable and implementation may begin, subject to §7 step 2.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
 
 Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-cv) (Aaron's existing project).
 
@@ -34,26 +34,23 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 
 Decisions **#11–#23 are all ACCEPTED** (§4), with the two qualifications noted there.
 
-### IN FLIGHT as of 2026-08-07 (may have been interrupted — check before redoing)
+### Both blocking findings are CLOSED
 
-`framework-core` was resumed to fix **guardian-02 blockers 1 and 2 only** (Aaron scoped it to those). Expected outputs: corrected `payloads.md` §2.2.1 mechanism with an executed verification, `record_kind` threaded through `loader.md`/`broker.md`/`payloads.md`, `climbcv topics -v` gaining payload type/`schema`/`unit`, and a new `design/revision-02.md` recording findings 1–2 as addressed and **3–15 as explicitly DEFERRED**.
+`design/revision-02.md` records every guardian-02 finding: **1 and 2 addressed, 3–15 explicitly deferred** with what each deferral costs. Guardian-02's verdict was that closing 1 and 2 makes the surfaces lockable and that **no third full review is warranted** — that condition is now met.
 
-**If that run did not complete:** `git status` and `git diff` show exactly how far it got; `c0c355f` is the clean pre-fix state. Findings 3–15 were deliberately out of scope for it — they are not lost, they are listed below. Decision **#7 was re-confirmed** with no action required (it was already accepted; the dogfood *re-run* it implies is item 3 below, still queued).
+- **Blocker 1 (payload immutability) — verified by execution, not argument.** This mechanism had been wrong twice; both earlier fixes read correctly on the page. `design/verify/payload_immutability.py` is the standing acceptance test and passes on Python 3.13.11 / numpy 2.4.1: read-only survives `pickle.loads(pickle.dumps(x))` for all 7 contract types, the aliasing-view publisher race is closed, subscriber mutation raises, and `Record.data`'s nested arrays are read-only at every depth. **Run it before trusting `payloads.md` §2.2.1.**
+- **Blocker 2 (`record_kind`) — closed at all three enforcement points**: required manifest key, `TopicDescriptor` field joined to the merge-equality check, and a `publish()`-time comparison. `climbcv topics -v` also now prints the three fields that actually constitute a contract.
 
 ### Do these next, in order
 
-**Two blocking fixes — this is the whole remaining gate.** Guardian 02 was explicit that no third full review is warranted: verify these two and proceed.
+Nothing here blocks implementation. All of it is additive, and `design/revision-02.md` has the detail.
 
-1. **`payloads.md` §2.2.1 — correct the immutability mechanism.** Define `__setstate__` in each dataclass's own body (or assign `cls.__setstate__` from a decorator applied *outside* `@dataclass`); test ownership with `arr.flags["OWNDATA"]` not `arr.base is not None`, copying via `np.array(arr, copy=True, order="C")`; give `Record` a `__setstate__` that re-walks `data`, or drop its recursive read-only claim. **Acceptance criterion: a test asserting the read-only flag survives `pickle.loads(pickle.dumps(x))` for every contract type.** That test is what would have caught this and what catches the next `_ARRAY_FIELDS` omission.
-2. **`Record` must declare and check its `kind`** — required `[[publishes]]` key when `payload = "record"`, a `TopicDescriptor` field, joined to §4.2's merge-equality check, and checked in `publish()` alongside the existing `isinstance`. v1 is the only opportunity: making a manifest key required later is a tightening, which §5's own table calls breaking.
-
-**Then, before implementation:**
-
-3. **Re-run `plugins-and-config` against the revised surfaces** (guardian-02 finding 15). `first-party-plugins.md` was never revised, so the dogfood proof now contradicts the API it was meant to validate — it still shows `as_bgr().copy()`, `finish()` for the unavailable paths, `<plugin_dir>/build/`, `np.clip` on boxes, and no `[config] keys`/`conflate`/`mode`/`unit` in any manifest. Decision #7's claim is only as good as the last time it was actually run.
-4. **Worth an hour on `plugin-api.md` §7 while it has no installed base** — findings 6, 7, 8: compute "unknown topic" against the *discovered* rather than enabled vocabulary; make host `required` a mandatory keyword rather than defaulting to the one direction §5 forbids reversing; let `config=` accept a dict so `ClimbCV.publish()` is usable without telling an end user to hand-author TOML.
-5. **Three should-fixes that will each cost someone a bad afternoon** — findings 3 (`provides_topology` cannot express "same as my input", so a third-party pose plugin kills the app via the first-party smoother), 4 (`self.stopping` cannot change while the blocking handler it exists for is running), 5 (§7.4's callback thread is unstated and contradicts today's `start(blocking=True)` behaviour).
-6. **Then `docs-and-testing`**, which has deliberately never run.
-7. Implementation stays gated behind §7 step 2's multi-agent review.
+1. **Re-run `plugins-and-config`** (guardian-02 finding 15). `first-party-plugins.md` is stale against the revised API, so the dogfood proof currently contradicts what it validates. Decision #7's claim is only as good as the last time it was exercised — and this check has already caught two real API gaps (F-1, F-14), so it is the highest-value remaining work rather than housekeeping.
+2. **An hour on `plugin-api.md` §7** — findings 6, 7, 8. Cheapest now, because §7 has no installed base yet; that is the only moment those are free.
+3. **Findings 3, 4, 5** — each recoverable additively, each will cost someone a bad afternoon first. Finding 3 is the most consequential: until fixed, a third-party pose plugin kills the app via the first-party smoother, which undercuts the swap Decision #9 was chosen for.
+4. **Findings 9–14** — smaller, all additive.
+5. **`docs-and-testing`**, which has deliberately never run.
+6. Implementation, gated behind §7 step 2's multi-agent review.
 
 ### Guardian 02's answers to the questions it was asked
 
