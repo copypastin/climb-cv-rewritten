@@ -34,6 +34,12 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 
 Decisions **#11–#23 are all ACCEPTED** (§4), with the two qualifications noted there.
 
+### IN FLIGHT as of 2026-08-07 (may have been interrupted — check before redoing)
+
+`framework-core` was resumed to fix **guardian-02 blockers 1 and 2 only** (Aaron scoped it to those). Expected outputs: corrected `payloads.md` §2.2.1 mechanism with an executed verification, `record_kind` threaded through `loader.md`/`broker.md`/`payloads.md`, `climbcv topics -v` gaining payload type/`schema`/`unit`, and a new `design/revision-02.md` recording findings 1–2 as addressed and **3–15 as explicitly DEFERRED**.
+
+**If that run did not complete:** `git status` and `git diff` show exactly how far it got; `c0c355f` is the clean pre-fix state. Findings 3–15 were deliberately out of scope for it — they are not lost, they are listed below. Decision **#7 was re-confirmed** with no action required (it was already accepted; the dogfood *re-run* it implies is item 3 below, still queued).
+
 ### Do these next, in order
 
 **Two blocking fixes — this is the whole remaining gate.** Guardian 02 was explicit that no third full review is warranted: verify these two and proceed.
