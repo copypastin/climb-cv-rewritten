@@ -1,8 +1,48 @@
 # climb-cv Plugin Architecture — Brainstorm Summary
 
-Status: **architecture locked (Decision #9, confirmed 2026-08-07); detailed section-by-section design in progress**. This document is the handoff artifact for continuing that work, potentially across multiple agents/sessions.
+Status: **architecture locked (Decision #9, confirmed 2026-08-07); detailed design revised but incomplete — revision pass interrupted at commit `372673c`.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
 
 Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-cv) (Aaron's existing project).
+
+---
+
+## 0. SESSION HANDOFF — read this first (2026-08-07, 03:41)
+
+Work stopped mid-revision when credit ran out. **Everything is committed; nothing is lost.** Start here.
+
+### Where things stand
+
+| Commit | What it holds |
+|---|---|
+| `4bb6661` | Baseline — this doc, 4 agent definitions in `.claude/agents/`, `framework-core`'s 6 design files |
+| `ca1d564` | `design/reviews/guardian-01.md` — 5 blocking (B1–B5), 18 should-fix (S6–S23), naming rulings, verdicts on #14/#15 |
+| `d1e8345` | `plugins-and-config`'s `first-party-plugins.md` + `config.md` — friction registers F-1..F-16 (§10) and C-1..C-8 (§11) |
+| `156739a` | Review convergence recorded here |
+| `2b7e138` | **Clean pre-revision state.** C-6 accepted, naming rulings, #14/#15, T1/T2 coupling |
+| `372673c` | **PARTIAL revision pass — current HEAD.** +2098/−261 across 5 files |
+
+### What the interrupted revision pass did and did not do
+
+**Revised in place:** `broker.md`, `isolation.md`, `loader.md`, `payloads.md`, `plugin-api.md`. It was stopped partway through `plugin-api.md` §3.
+
+**Not done — these are the resumption tasks:**
+
+1. **`config-contract.md` is untouched.** Consistent with this, findings **C-1, C-3, C-5, C-8** appear nowhere in the revised text. C-1 is the structural one: `plugins-and-config` showed the contract asks for a closest-match warning that is *impossible in a single pass* given the config→discovery load order, and proposes a second entry point `check_against_plugins(cfg, plugin_ids, topic_names)`. C-3 wants `FRAMEWORK_DEFAULTS` exported as an importable table so the key/type list isn't duplicated and drifted.
+2. **`design/revision-01.md` was never written.** This was to be the per-finding audit trail (addressed / declined + reason). **Its absence is the main open risk:** B1–B5, S6–S23 and F-1..F-16 are all *referenced* in the revised files, but nobody has verified each was actually resolved rather than merely mentioned. Reconstruct it by diffing `2b7e138..HEAD` per finding before treating any surface as locked.
+3. **No second guardian pass has run,** and the first pass's author never gave a lockability verdict — the question was asked but the run was interrupted before answering.
+
+### Do these next, in order
+
+1. `git diff 2b7e138..HEAD -- design/` and build `design/revision-01.md` from it — one line per finding, outcome and location. This is cheap, and everything downstream depends on knowing what actually changed.
+2. Finish `config-contract.md` for C-1, C-3, C-5, C-8, plus the four asks in `config.md` §13 (`check_against_plugins()`, exported `FRAMEWORK_DEFAULTS`, `config_dir` on `LoadedConfig` and the `Plugin` base, `passthrough` on `core.smooth_oneeuro`).
+3. Re-run `plugin-api-guardian` on the revised surfaces — a second pass, since 5 blocking findings' fixes are themselves new API.
+4. **Only then** start `docs-and-testing`, which has deliberately never run. Writing an authoring guide against an unstable surface was the thing being avoided.
+5. Implementation stays gated behind §7 step 2's multi-agent review.
+
+### Two operational notes
+
+- **`.claude/agents/` is loaded at session start.** The four agents were created mid-session, so they were never invocable by name — every run so far used `general-purpose` with the agent file's contents inlined verbatim, which is functionally equivalent. **In a fresh session they work directly by name.** Prefer that.
+- **`~/Desktop/2/`** holds stale copies of this file and `.claude/agents/`, stranded there by a permission-prompt glitch that renamed a path instead of running a command. Everything in it is superseded by this repo. Safe to delete; left in place because it is not mine to remove.
 
 ---
 
