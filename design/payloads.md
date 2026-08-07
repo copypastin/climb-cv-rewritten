@@ -168,15 +168,19 @@ mechanism has been wrong twice; both fixes were real and neither was sufficient 
 
 Cost: 0.23 µs per array per delivery, i.e. 2 % of the 10.5 µs it costs to pickle one 320×240 frame.
 
-**Acceptance criterion — `design/verify/payload_immutability.py`.** The mechanism above is
-transcribed there exactly as a reader would implement it, and asserts: `__setstate__` resolves to the
-wrapped one for all seven types; arrays are read-only in the publisher; **read-only survives
-`pickle.loads(pickle.dumps(x))`**; a subscriber's `frame.pixels[:] = 9` raises; the `OWNDATA` test
-copies an aliasing view and survives a round-trip; `Record.data`'s nested arrays are read-only at
-every depth while non-array leaves are untouched; every `ndarray`-annotated field is declared; and
-non-contiguous input is copied rather than rejected. Verified passing on Python 3.13.11 / numpy 2.4.1.
-**Run it before treating this section as true** — two plausible-reading mechanisms have already failed
-here, and the round-trip assertion is the one that catches the next `_ARRAY_FIELDS` omission.
+**Acceptance criterion — `tests/test_contracts.py`.** This section is now implemented in
+`src/climbcv/contracts.py` and the tests are the criterion, not ordinary coverage. They assert:
+`__setstate__` resolves to the wrapped one for all seven types; arrays are read-only in the publisher;
+**read-only survives `pickle.loads(pickle.dumps(x))`**; a subscriber's `frame.pixels[:] = 9` raises;
+the `OWNDATA` test copies an aliasing view and survives a round-trip; `Record.data`'s nested arrays
+are read-only at every depth while non-array leaves are untouched; every `ndarray`-annotated field is
+declared; and non-contiguous input is copied rather than rejected. 42 tests, passing on Python
+3.13.11 / numpy 2.4.1.
+
+**Run them before treating this section as true.** Two plausible-reading mechanisms have already
+failed here, in-process checks pass for both of them, and the round-trip assertions are the only ones
+that would have caught either. The reflection test is what catches the next `_ARRAY_FIELDS` omission —
+which is how a nested `Record` array escaped the first time.
 
 **Three consequences to state, because each is author-visible:**
 

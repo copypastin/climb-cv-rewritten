@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "climb-cv"
+version = "0.1.0.dev0"
+description = "Plugin-based climbing motion analysis"
+requires-python = ">=3.11"
+# 3.11, not 3.10: tomllib is stdlib only from 3.11, and every framework dependency is
+# imposed on every plugin author given there is no pip-install step. See Decision #17.
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# Deliberately not framework dependencies. The framework core imports dataclasses, numpy
+# and typing only; these belong to the first-party plugins that need them.
+plugins = [
+    "opencv-python>=4.8",
+    "mediapipe>=0.10",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/climbcv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
