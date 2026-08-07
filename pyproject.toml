@@ -29,3 +29,4 @@ packages = ["src/climbcv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: spawns real OS processes"]
