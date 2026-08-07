@@ -404,10 +404,16 @@ class Supervisor:
                 if any(s.topic == topic and s.required for s in p.subscribes)
             ]
             if requirers:
-                log.error(
+                # An orderly completion is not an error, even though it ends the run: a video
+                # file reaching its end is the expected outcome, and logging it at ERROR trains
+                # users to ignore ERROR. A quarantine genuinely is one.
+                level = logging.INFO if why == "finished" else logging.ERROR
+                log.log(
+                    level,
                     "%s %s; it is the only publisher of %r, which %d plugin(s) require "
-                    "(%s) — shutting down.",
+                    "(%s) — shutting down.%s",
                     plugin_id, why, topic, len(requirers), ", ".join(sorted(requirers)),
+                    "" if why != "finished" else " This is the normal end of a finite source.",
                 )
                 self.stop(f"{plugin_id} {why} and {topic!r} is required")
                 return

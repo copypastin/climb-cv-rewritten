@@ -1,0 +1,29 @@
+[plugin]
+id          = "body_tilt"
+version     = "1.0.0"
+api_version = "1.0"
+entry       = "plugin:BodyTilt"
+name        = "Torso lean angle"
+description = "Publishes how far the climber's torso leans from vertical."
+author       = "example"
+
+# Mandatory for anything that subscribes to a pose topic. A pose payload's landmark indices
+# are meaningless without knowing the topology: index 11 is a shoulder under
+# mediapipe.pose.33 and a hip under coco.17. Declaring it turns "wrong skeleton drawn silently
+# forever" into a startup error naming both plugins. Pass "any" if you genuinely do not index
+# individual joints (a recorder, a filter that treats columns uniformly).
+requires_topology = "mediapipe.pose.33"
+
+[[publishes]]
+topic       = "example.body_tilt"
+kind        = "stream"
+exclusivity = "shared"
+payload     = "scalar"
+unit        = "degree"
+doc         = "Torso lean from vertical; 0 is upright."
+
+[[subscribes]]
+topic = "pose.smoothed"
+
+[config]
+keys = ["min_visibility"]

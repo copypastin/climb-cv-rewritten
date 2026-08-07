@@ -1,0 +1,60 @@
+# Example configuration — one file, sectioned by plugin id.
+#
+# Run with it:  cd examples && python3 -c "
+#   import sys; sys.path.insert(0, '../src')
+#   from climbcv.app import ClimbCV
+#   ClimbCV('climbcv.toml').run()"
+#
+# Everything here is optional. Absent config is fine: every value below is a default except
+# the paths and the source.
+
+[framework]
+# Where your plugins live, relative to THIS file. Plugins shipped with climb-cv load from a
+# separate bundled root; anything here shadows them by id, so you can replace a first-party
+# stage by dropping in a folder that declares the same id.
+plugin_dir = "plugins"
+state_dir  = ".state"          # per-plugin writable dirs are created under here
+log_level  = "INFO"            # CRITICAL | ERROR | WARNING | INFO | DEBUG
+
+# stream_depth is deliberately absent. It defaults to "auto", computed per subscriber from how
+# many topics that plugin reads. Pinning a literal number here reintroduces the cross-topic
+# starvation the computed value exists to prevent — a 30fps `frame` burst evicting another
+# topic's pending message before its handler ever runs.
+
+grace_s = 2.0                  # how long a plugin gets to exit before it is terminated
+
+[plugins."core.capture"]
+# A file, or omit `source` and set `device = 0` for a camera.
+source = "sample.mp4"
+mirror = false
+fps    = 30                    # cap the rate; 0 or absent means as fast as the source allows
+loop   = false                 # true to restart a file at the end instead of ending the run
+
+[plugins."core.pose_mediapipe"]
+# "cpu" (default) or "gpu". GPU is opt-in because on some machines MediaPipe's GPU delegate
+# initialises successfully and then aborts during inference, which no exception handler can
+# catch — the framework would contain it and restart forever.
+delegate = "cpu"
+
+[plugins."core.smooth_oneeuro"]
+min_cutoff = 1.0               # lower = smoother, laggier
+beta       = 0.3               # higher = tracks fast motion more closely
+# passthrough = true           # republish unsmoothed. NOT the same as enabled = false:
+                               # disabling this plugin removes `pose.smoothed` entirely and
+                               # starves everything that requires it.
+
+[plugins.brightness]
+dark_below     = 60.0
+report_every_s = 2.0
+
+[plugins.body_tilt]
+min_visibility = 0.5
+
+# Turn any plugin off:
+# [plugins.body_tilt]
+# enabled = false
+
+# Pin a publisher when two plugins compete for the same exclusive topic. The framework refuses
+# to start rather than guessing, and its error message contains this snippet ready to paste:
+# [topics."pose.smoothed"]
+# publisher = "core.smooth_oneeuro"

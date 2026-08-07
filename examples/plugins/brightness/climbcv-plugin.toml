@@ -1,0 +1,27 @@
+[plugin]
+id          = "brightness"
+version     = "1.0.0"
+api_version = "1.0"
+entry       = "plugin:Brightness"
+name        = "Frame brightness"
+description = "Publishes mean frame brightness, and logs when the scene goes dark."
+author      = "example"
+
+# A topic the standard set does not define must describe itself. The framework builds the
+# whole topic graph from manifests and never imports your code to find out what you publish —
+# so anything not written here does not exist as far as wiring is concerned.
+[[publishes]]
+topic       = "example.brightness"
+kind        = "stream"        # conflating: latest value wins, drop under load
+exclusivity = "shared"        # several brightness sources could coexist without contradicting
+payload     = "scalar"
+unit        = "level"         # required for scalar topics, and checked across publishers
+doc         = "Mean pixel brightness, 0-255."
+
+[[subscribes]]
+topic = "frame"
+
+# Optional and purely informational: never validated, never rejects a value. It exists so a
+# typo'd option gets a nearest-match warning instead of doing nothing silently.
+[config]
+keys = ["dark_below", "report_every_s"]

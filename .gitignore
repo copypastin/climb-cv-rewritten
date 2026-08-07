@@ -17,3 +17,7 @@ dist/
 *.pt
 *.task
 *.tflite
+
+# Example run artifacts
+examples/.state/
+examples/sample.mp4
