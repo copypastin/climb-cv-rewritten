@@ -457,8 +457,227 @@ Rules for both, several previously unspecified:
 | `on_start` / `on_stop` / `on_pause` / `on_config_change` | No hot reload (Assumption §3). Two hooks are enough; more hooks are more contract to keep. |
 | Access to other plugins | Plugins are independent (Assumption §3). No lookup, no direct calls, no shared state. Topics are the only channel — which is what makes any plugin replaceable by any other. |
 | `self.frame_size`, `self.fps`, ambient pipeline state | It would be a second, undeclared data channel competing with topics. Everything a plugin needs arrives in a payload. |
-| `self.spawn_thread()` / any concurrency helper | Handing authors concurrency primitives is how concurrency knowledge leaks back in. A plugin needing background work should be two plugins, or use `@every`. |
+| `self.spawn_thread()` / any concurrency helper | Handing authors concurrency primitives is how concurrency knowledge leaks back in. A plugin needing background work should be two plugins, or use `@every`. **Narrowed in revision 01:** `self.stopping` (§3.10) is a read-only boolean, not a concurrency primitive — same category as `self.config`. The blanket phrasing was over-broad and made a blessed idiom unwritable. |
 | Priority / ordering control | No ordering semantics exist (`broker.md` §5.4). |
+| `join=` on `@subscribe` | Cut from v1 — see §4.3 for the four reasons and the three-line replacement. |
+| Path resolution for plugin options | The framework hands over `self.config_dir` (§3.11) and the plugin decides. Resolving for them would require knowing which opaque options are paths, i.e. the typed schema Decision #8 excludes. |
+
+---
+
+### 3.7 `setup()`, `teardown()`, `finish()`, `unavailable()` — the four lifecycle calls
+
+Two the author overrides, two the author calls. Mechanics live in `isolation.md`; this is the contract as
+an author reads it.
+
+```python
+def setup(self) -> None:
+    """Called ONCE, in this plugin's own process, before any handler runs.
+
+    Not once per message and not once per test -- open your model, your camera, your
+    window here, and store them on self.
+    """
+
+def teardown(self) -> None:
+    """Called ONCE, when climb-cv is stopping. Best effort.
+
+    For CLOSING things -- files, devices, windows -- not for finishing work. You get
+    1 second by default; if closing genuinely takes longer, declare it:
+
+        [plugin]
+        teardown_timeout_s = 8.0        # cap 30.0
+
+    It may run while your inputs are still publishing and while your outputs are
+    already gone. Close things; do not coordinate.
+    """
+```
+
+> **Ruling #1's docstring caveat, which is why "ONCE" is shouted.** `setup`/`teardown` were kept over
+> `start`/`stop` (which collides with `ClimbCV.start()`/`.stop()` and would make every doc sentence
+> ambiguous about app-versus-plugin) and over `on_setup`/`on_teardown` (which reads as a handler for an
+> event named "setup", and no such topic exists). But the vocabulary comes from `pytest`/`unittest`, where
+> these run **per test** — so the intuition most Python authors carry is "once per unit of work", and an
+> author acting on it would reopen a camera on every frame. Saying "once, in this plugin's own process,
+> before any handler runs" costs one line and corrects the one thing the borrowed name gets wrong.
+
+```python
+def finish(self) -> None:
+    """Declare that your work is complete. Exits cleanly; not an error.
+
+    *** This can end the whole run. *** If you are the resolved publisher of a topic
+    that other plugins REQUIRE, climb-cv treats your completion as end-of-run and
+    shuts down -- which is right for a video file reaching EOF, and surprising if you
+    did not expect it. Check `climbcv topics` to see whether anything requires what
+    you publish.
+
+    Legal from setup() too, meaning "there was nothing for me to do".
+    """
+
+def unavailable(self, reason: str) -> None:
+    """Declare that this machine cannot run you -- no GPU, no sensor, no compiler,
+    no camera. Exits cleanly; NOT a crash and NOT a restart.
+
+    `reason` is shown to the user verbatim, so write it as a sentence that tells them
+    what to install or plug in. This is the dynamic counterpart to the manifest's
+    `platforms` key, and it gets the same treatment: one INFO line, and the topics you
+    would have published are simply absent.
+
+    Legal from setup() (the usual case) and from a handler (a device disappeared).
+    """
+```
+
+**Why `unavailable()` exists rather than overloading `finish()` (F-13, guardian S17).** There was no
+third outcome between "worked" and "crashed": `platforms` covered the *static* case declaratively, while
+a *dynamic* precondition had only `finish()` — so the log would read *"mac_lid completed its work"* for
+*"this Mac has no lid angle sensor"*, and `isolation.md` §4.2 makes any other clean exit a crash. S17
+notes the same gap is a first-party/third-party asymmetry: the mac lid sensor gets a declarative skip,
+while a third-party plugin needing a GPU gets `Plugin 'depth_holds' has been disabled: it crashed 2
+times`, which reads as broken rather than as "you don't have that hardware."
+
+The cheaper fix — defining `finish()`-in-`setup()` as "skip me" — was **declined**, because the log line
+*is* the deliverable here. A mechanism with the right mechanics and the wrong sentence has fixed the
+smaller half of the finding.
+
+**Both are terminal.** After either, no further handlers or timers run. Neither is retried, and neither
+counts against the restart budget. `isolation.md` §4.4 has the full consequence table, including the one
+case with teeth: calling either from `setup()` when you are a critical publisher is a **fatal startup
+error** rather than a mid-run shutdown, because at startup the framework can still print something
+actionable.
+
+### 3.8 If your plugin owns a window, pump its event loop from a timer
+
+**The rule, named so it is documentation rather than folklore:**
+
+> **A plugin that owns a GUI window MUST service that window's event loop from an `@every` handler.
+> Never rely on a subscription handler to do it.**
+
+```python
+@every(0.016)
+def render(self):
+    ...
+    cv2.waitKey(1)            # cv2:        services the window
+    # plt.pause(0.001)        # matplotlib: services the window
+```
+
+**Why the framework cannot do this for you.** Your plugin's process runs one loop
+(`isolation.md` §3.3): it drains queues, dispatches handlers, fires timers, repeats. The blocking read
+between turns is bounded by *your next timer* — so **a plugin with no timers, whose input stops, stops
+turning over.** `draw_idle()` queues a repaint that nothing ever services, the window freezes, and on
+macOS the OS reports the process as "not responding". The user's conclusion is that climb-cv hung.
+
+Data stopping is not an edge case: the climber steps out of frame, the pose plugin quarantines, a file
+feed reaches EOF. And today's single-process version does **not** do this — it is a regression introduced
+purely by the process model, and it is invisible to any test that keeps publishing.
+
+The framework cannot fix it centrally because pumping an event loop is toolkit-specific: `cv2.waitKey`,
+`plt.pause`, a Qt `processEvents`. There is no generic call, and guessing would be worse than asking.
+What the framework *does* do is bound its own blocking read at 1 s regardless of timers
+(`broker.md` §5.1), which keeps heartbeats honest — but it cannot pump your window.
+
+**The shape this produces, and the honest cost.** The subscription handler becomes a one-line stash and
+the expensive work happens on the tick:
+
+```python
+@subscribe("pose.smoothed")
+def on_pose(self, pose, meta):
+    self._pose = pose                 # cheap
+
+@every(0.033)
+def redraw(self):
+    draw(self.ax, self._pose)         # expensive, and paced by YOU
+    plt.pause(0.001)
+```
+
+This is a real ergonomic cost and it is `isolation.md` §3.3's blocking read leaking into the authoring
+interface — `plugins-and-config` was right to call Decision #4 *bent* rather than broken: no author
+writes a lock, but a GUI-owning author must know that the loop blocks. Two consolations, neither of them
+a full defence: it affects only GUI-owning plugins, and it **decouples redraw rate from data rate**,
+which is an improvement — the redraw no longer runs once per message it cannot keep up with, and the rate
+becomes configurable (§3.2).
+
+A related consequence worth stating separately, because it is the one that costs a user their session:
+**read your quit key on the timer too.** `ExoLive` (§2.1) reads ESC from `render`, not from `on_frame`,
+so the quit path survives the frame publisher dying. A quit key that only works while data flows is a
+quit key that fails exactly when the user most wants it.
+
+### 3.9 `self.data_dir` — somewhere to write
+
+```python
+self.data_dir      # Path, absolute, created before setup() runs. Yours alone.
+```
+
+`<state_dir>/<plugin_id>/`, where `state_dir` defaults to `./.climbcv` next to the config file. The
+framework creates it (`isolation.md` §3.1 step 8), so an author never writes `mkdir(parents=True,
+exist_ok=True)`, and never has to decide where a cache belongs.
+
+**Why it had to exist (F-7, forced by F-3).** Any plugin that compiles something, downloads a model, or
+caches a calibration needs a writable location, and there was none — `log_dir` exists for logs and that
+is all. `mac_lid` compiles a Swift helper; today it writes to `<repo>/build/` via `parents[4]`, which
+will not survive the move into `plugins/`. The obvious replacement, `<plugin_dir>/build/`, is available
+to any plugin and so is not a first-party privilege — but `plugins-and-config` identified three
+conditions that break it, and **`loader.md` §2.1 made one of them the normal case**: bundled plugins live
+inside an installed package, which is usually read-only. So F-7 went from tidier to required.
+
+Not a sandbox. `isolation.md` §9 says it plainly: process isolation here is fault containment, not
+security (Decision #6), and `data_dir` is a convenience location, not a confinement. A plugin can still
+write anywhere it has permission to.
+
+### 3.10 `self.stopping` — how a blocking handler notices shutdown
+
+```python
+self.stopping      # bool, read-only. False until climb-cv begins shutting down.
+```
+
+Set before the framework waits for your `teardown()`. Read it inside any loop that could run for more
+than a moment:
+
+```python
+@every(0)
+def pump(self):
+    while not self.stopping:
+        chunk = self.socket.recv(65536)     # may block for seconds
+        if not chunk:
+            return
+        self.publish("acme.audio", Record(...))
+```
+
+**Why it is in v1 (guardian S18).** `isolation.md` §3.3 explicitly *blesses* a blocking `@every(0)`
+handler as the way to write a source, and then checks the shutdown Event only *between* calls. So an
+IP-camera plugin whose `read()` stalls for ten seconds is terminated after `grace_s = 2.0`,
+**`teardown()` never runs, and the device handle leaks** — the framework killing a plugin for doing
+exactly what it was told to do.
+
+§3.6 previously ruled out "any concurrency helper" and that phrasing was too broad: a read-only boolean is
+not a primitive an author can misuse, it is the same category as `self.config`, and there is nothing to
+lock. The deeper reason it had to ship in v1 rather than v1.1 is `isolation.md` §4.5's reserved-name set —
+adding a member later can collide with an author's attribute, so the additions had to land before the
+first plugin shipped.
+
+Companion for the same class of plugin: declare `heartbeat_warn_s` in your manifest if your handler
+legitimately blocks for a long time, or the stall warning will fire on every read.
+
+### 3.11 `self.config_dir` — resolving a path a user typed
+
+```python
+self.config_dir    # Path | None. The directory containing climbcv.toml, or None if there isn't one.
+```
+
+```python
+p = Path(self.config.get("model_path", "hold_detection.pt"))
+if not p.is_absolute():
+    p = (self.config_dir or Path.cwd()) / p
+```
+
+**The asymmetry this closes (C-2).** `[framework]` path keys — `plugins_dir`, `log_dir`, `state_dir` — are
+resolved against **the config file's directory**. A plugin-section path value is an untouched string that
+the plugin resolves against **its working directory**. So `model_path = "models/holds.pt"` in a config
+file meant one thing to `log_dir` and a different thing to `yolo_holds`, and a plugin had no way to opt
+into the framework's own rule *because it never learned where the config file was*. Nothing warned.
+
+The framework hands over the base directory and stops there. Resolving plugin paths automatically would
+require knowing which of a plugin's opaque options are paths — the typed schema Decision #8 excludes —
+and a "looks like a path" heuristic would be wrong in both directions. `None` rather than defaulting to
+the CWD, because "there was no config file" and "the config file is in the CWD" are genuinely different
+situations for a plugin resolving a user-supplied path. Full reasoning: `config-contract.md` §3.5.
 
 ---
 
@@ -475,31 +694,78 @@ The framework helps by making the drop *visible* rather than by pretending it do
 `climbcv topics -v` reports per-subscriber drop counts, so "my plugin is too slow" is measurable
 rather than a hunch.
 
-### 4.2 A restarted publisher's `seq` restarts at 0
+### 4.2 `Meta.seq` — keyed by publisher, always
 
-So a *decrease* in `Meta.seq` means "publisher restarted," not reordering. One line in the guide,
-because it will otherwise be discovered as a bug.
+`seq` is per **`(publisher, topic)`**, not per topic. Two consequences, and the second one is the
+correction:
 
-### 4.3 Pairing two topics — the declared join
+- **A *decrease* in `seq` from the same source means "that publisher restarted,"** not reordering. A
+  restarted child's per-topic `seq` starts again at 0 (`isolation.md` §4.3).
+- **On a shared topic, comparing `seq` across sources is meaningless.** Two hold detectors sitting at
+  seq 400 and seq 3 are not 397 messages apart; they are two publishers who have each been counting
+  their own messages.
+
+So any bookkeeping on `seq` — drop detection, gap counting, restart detection — must be **keyed by
+`meta.source`**:
+
+```python
+@subscribe("holds.boxes")
+def on_holds(self, holds: HoldBoxes, meta: Meta):
+    prev = self._seq.get(meta.source)
+    if prev is not None and meta.seq > prev + 1:
+        self.log.debug("missed %d from %s", meta.seq - prev - 1, meta.source)
+    self._seq[meta.source] = meta.seq
+```
+
+> **Corrected (guardian S12).** This section previously said only *"a decrease in `Meta.seq` means
+> publisher restarted, not reordering"* — which holds per `(publisher, topic)` and is **false per
+> topic**, and `holds.boxes` is shared by an accepted decision (#12). Two detectors would make an
+> overlay's drop detection fire on alternating messages forever. The wording mattered more than most
+> because §6 hands this file to `docs-and-testing` as the whole of "how to write a plugin", so it would
+> have been copied into the guide and then into plugins.
+
+### 4.3 Pairing two topics — `latest()` plus `frame_seq`
 
 Full isolation means `frame` and `pose.smoothed` arrive independently and may be a frame apart
 (`isolation.md` §2.2). An overlay drawing `latest("pose.smoothed")` onto the current frame may
-misregister slightly.
+misregister slightly. Three lines fix it:
 
 ```python
-@subscribe("frame", "pose.smoothed", join="frame_seq")
-def on_pair(self, frame: Frame, pose: PoseFrame, meta: Meta):
-    ...   # called once per frame_seq for which BOTH have arrived
+@every(0.016)
+def render(self):
+    frame = self._frame
+    pose  = self.latest("pose.smoothed")
+    if frame is None or pose is None:
+        return
+    if pose.frame_seq != frame.seq:        # not the pose for THIS frame
+        return                             # ...or draw it anyway and accept the lag
+    draw(frame, pose)
 ```
 
-The framework buffers (bounded, drop-oldest, depth 4) and matches on the named field. This is
-precisely the kind of thing that must not be hand-rolled — the naive version grows unbounded and the
-careful version is 40 lines of buffering an author should never write. It is also, by the same token,
-the most complex thing in the interface.
+The choice in that last comment is the author's and the framework should not make it for them: an
+overlay usually prefers a slightly stale skeleton to a missing one, while a measurement plugin computing
+joint angles against pixel positions wants the exact pair or nothing. `latest()` reflects messages
+drained this turn before any handler runs (`isolation.md` §3.3), so this is as fresh as the data gets.
 
-**It is the one item to cut under scope pressure**, and the fallback is honest: `self.latest()` plus a
-`frame_seq` comparison, three lines, correct, marginally more work for the author. Flagged as such
-rather than presented as settled.
+**A declared `join=` was considered and cut from v1 (guardian ruling #4.)** The proposal was
+`@subscribe("frame", "pose.smoothed", join="frame_seq")` with the framework buffering and matching on
+the named field. It was cut for four reasons, and the first two are correctness problems rather than
+cost:
+
+1. **Undefined on shared topics.** With two detectors both publishing `frame_seq = 100`, does the handler
+   fire once or twice, and with which source's payload? There is no answer that is right for both an
+   overlay and a recorder.
+2. **Silently broken against the replay sentinel.** `PoseFrame.frame_seq == -1` means "not derived from a
+   live frame" (`payloads.md` §3.2), and `broker.md` §8 *recommends* building `replay()` as a plugin
+   publishing `pose.smoothed`. So two recommended features would combine into a handler that never fires
+   — a blank overlay, with no error anywhere.
+3. **It breaks §3.3's invariant** that the handler signature is always `(self, payload, meta)`, by
+   introducing a variadic form whose parameter order must silently match the decorator's topic order.
+   Swap the two topics in the decorator and the payloads swap, with no error.
+4. **Re-adding it later is a keyword argument with a default** — a clean additive minor. So deferring is
+   the cheap direction and shipping it was the expensive one.
+
+If it ever returns, it must specify the shared-topic multiplicity and the `-1` case before anything else.
 
 ---
 
@@ -507,9 +773,28 @@ rather than presented as settled.
 
 Two, shipped in-repo, because in a drop-in ecosystem the first thing an author does is copy something.
 
-- `templates/minimal/` — manifest + a subscriber that logs. ~20 lines, both files.
-- `templates/detector/` — subscribes `frame`, publishes a shared topic it declares itself, has
+- `templates/my_logger/` — manifest + a subscriber that logs. ~20 lines, both files.
+- `templates/my_detector/` — subscribes `frame`, publishes a shared topic it declares itself, has
   config, has `setup()`/`teardown()`. Demonstrates every mechanism an average plugin needs.
+
+**The ids must be obviously placeholder — `my_detector`, not `detector` (guardian note).** Two authors who
+each copy `templates/detector/` without renaming ship two plugins with the id `detector`, and the user who
+installs both gets a **duplicate-id fatal** (`loader.md` §5 rule 8) for a mistake neither author made
+visibly. A `my_` prefix is a rename prompt that costs nothing, and the directory name, the `id`, and the
+class name should all carry it so that renaming one and forgetting another is caught by the
+`id`-versus-directory INFO line.
+
+Three things both templates must contain, each closing a discoverability gap a review found:
+
+- **`# No __init__ -- see setup()`**, because nothing an author reads *in code* said so and
+  `def __init__(self): super().__init__()` is the most ingrained reflex in Python (guardian S6).
+- **`requires_topology`**, if the template subscribes to a pose topic. `templates/my_detector/` subscribes
+  `frame`, so it has no such line — which is precisely how guardian B4's walkthrough starts, an author
+  copying a detector template and never learning the concept exists. It is now a mandatory manifest key
+  (`payloads.md` §4.0), so the manifest error teaches it; the template should still show the `"any"` form
+  in a comment.
+- **A commented `[config] keys = [...]`**, so C-6's opt-in typo detection is visible rather than
+  discovered.
 
 `docs-and-testing` owns their content; this section fixes their scope so they stay minimal and don't
 become a third documentation surface.
@@ -518,30 +803,47 @@ become a third documentation surface.
 
 ## 6. Handoffs and open items
 
-**Ready for `plugin-api-guardian` — this is the highest-priority review target in framework-core, as
-every symbol here is public and effectively permanent:** §2 (the whole class surface, member names),
-§3.1–3.5 (each decision and its error text), §3.6 (the omissions — a reviewer should push back on
-anything genuinely needed), §4.1–4.3 (what authors must understand), §5 (template scope).
+**Ready for `plugin-api-guardian` review 02 — this is the highest-priority review target in
+framework-core, as every symbol here is public and effectively permanent:** §2 (the whole class surface,
+member names, and the six revision-01 additions), §2.1 (all four examples, three of which were
+rewritten), §3.1–3.5 (each decision and its error text), §3.6 (the omissions), §3.7–§3.11 (the four
+lifecycle calls and the four new members), §4.1–4.3 (what authors must understand), §5 (template scope),
+**§7 (the embedding API, entirely new and previously undesigned)**.
 
-Specific questions for the guardian:
-1. `setup`/`teardown` vs. `on_setup`/`on_teardown` vs. `start`/`stop` — `start`/`stop` collides with
-   the host façade's `ClimbCV.start()`/`.stop()` and would confuse search results; `setup`/`teardown`
-   matches test-framework vocabulary most Python authors already carry.
-2. `latest()` vs. `last()` vs. `current()`.
-3. `@every(seconds)` vs. `@tick(hz)`. Seconds composes with `0` for "as fast as possible"; Hz does
-   not (`@tick(0)` reads as "never").
-4. Is `join=` (§4.3) worth its complexity in v1?
-5. Is `finish()` (`isolation.md` §4.4) the right name for "my work is done, not an error"?
+**The five naming questions from review 01 are settled** and are recorded here rather than re-asked:
+`setup`/`teardown` kept with a docstring caveat (§3.7); `latest()` kept with its return type unchanged and
+`latest_by_source()` added beside it (§3.5); `@every(seconds)` kept, with `set_interval` re-parameterising
+rather than replacing it (§3.2); **`join=` cut** (§4.3); `finish()` kept with its escalation now documented
+(§3.7).
+
+Two things a review-02 reader should push on hardest, because they are where this revision took the most
+liberty:
+
+1. **§2's surface grew from 7 members to 11.** Each addition has a finding and a first-party need behind it
+   and the table says which — but "every addition was justified individually" is exactly how a surface
+   creeps, and a reviewer is better placed than the author to say whether the total is still one uniform
+   authoring model.
+2. **§7 decided several things it could not derive** (see §7.7). The host is the one participant with no
+   manifest, so its declarations had to be invented rather than mapped, and three of the choices are
+   deliberately *asymmetric* with the plugin rules.
 
 **To `plugins-and-config`:** the four conversions are the acceptance test for this interface. **If any
 of them needs something not in §2, that is a defect in this layer — report it rather than reaching
-around it.** Two known pressure points: the overlay needs four simultaneous inputs (§3.5 / §4.3), and
-the lid sensor's Swift compile step needs to happen exactly once in `setup()` rather than per poll as
-it does today.
+around it.** Every one of your sixteen findings is answered — `revision-01.md` maps each to a file and
+section. The five that change your sketches directly: `latest_by_source` for `holds.boxes` (F-1), a timer
+on both GUI plugins (F-4), `set_interval` from `setup()` (F-2), `self.unavailable()` for `mac_lid`'s two
+dead ends (F-13), and `self.data_dir` for its build directory (F-7).
 
 **To `docs-and-testing`:** §2.1's four examples are deliberately written to be liftable into the
 authoring guide as the *whole* of "how to write a plugin." If the guide needs substantially more than
 these plus the payload docstrings, the interface is too complicated and that is a finding worth
-reporting back.
+reporting back. Note that **three of the four examples previously demonstrated bugs** — a call-counting
+throttle that regressed detection 4×, a frozen GUI window, and `latest()` on a shared topic — so if you
+have already lifted them, lift them again. §3.8 is the one process-model fact the guide cannot omit, and
+§7 is a second audience (host applications) that needs its own short page, not a paragraph inside the
+plugin guide.
 
-**Open:** §4.3 `join=`; the naming questions above.
+**Open:**
+- Nothing in this file is open. The naming questions are ruled on and `join=` is cut.
+- Cross-file items still open are listed in `broker.md` §8 (T2's preconditions, subscription decimation,
+  the `retain` kind) and `loader.md` §8 (dependency installation, the archive format).

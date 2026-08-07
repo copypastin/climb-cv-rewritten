@@ -25,7 +25,7 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 
 ### Where the revision pass got to
 
-**Revision pass complete as of `2a40560`**, with one concentrated gap. `design/revision-01.md` is the per-finding audit trail: **48 addressed, 2 partial, 6 declined, 3 deferred, 1 not reached.** `config-contract.md` is finished (C-1..C-8 plus all four of `config.md` §13's asks, all accepted). New proposed Decisions #18–#23 are in §4 above.
+**Revision pass complete as of `2a40560`**, with one concentrated gap. `design/revision-01.md` is the per-finding audit trail: **48 addressed, 2 partial, 6 declined, 3 deferred, 1 not reached.** `config-contract.md` is finished (C-1..C-8 plus all four of `config.md` §13's asks, all accepted). Decisions #18–#23 came out of this pass; all of #11–#23 are now ACCEPTED (§4).
 
 **The one remaining gap is `plugin-api.md`, and it is the highest-priority review target in the project:**
 
@@ -103,23 +103,30 @@ This existing worker-process/queue pattern is the direct precedent for how plugi
 
 ### Step-6 design decisions (#11–#17)
 
-Produced by `framework-core` on 2026-08-07; full reasoning in `design/`. **#12 and #17 accepted 2026-08-07** and folded into §3/§5 above. The rest remain proposed pending review — most are internal mechanics, but #13 defines a public surface and should clear `plugin-api-guardian` before it is locked.
+Produced by `framework-core` on 2026-08-07; full reasoning in `design/`. **All of #11–#23 are ACCEPTED as of 2026-08-07** — #12 and #17 first, folded into §3/§5 above; the remainder confirmed after guardian review 01 and the revision pass.
+
+Two qualifications on what "accepted" means here:
+
+- **#15 is accepted in its corrected form only.** Its mechanism stands (`setup()` in the child, `__init__` reserved); its original justification is rejected as factually wrong — no plugin instance is ever pickled, because the child constructs it. The operative reason is that `config`/`log`/`publish`/`latest` are bound *after* construction. The error text must say the true thing, since the original taught authors a false model of what crosses a process boundary.
+- **#19 supersedes guardian B3's mechanism, not its intent.** B3 as written was measured insufficient — `__post_init__` is bypassed on unpickle and numpy does not preserve `writeable=False` across a pickle round-trip, so it would have frozen arrays in the publisher while leaving them writeable in every subscriber. `__setstate__` is what makes the guarantee real, and #18's T2 preconditions depend on it holding.
+
+Accepting these does **not** make the API lockable — that is a separate judgement, still pending the second guardian pass. See §0.
 
 | # | Proposed decision | Status |
 |---|-------------------|--------|
-| 11 | Brokerless: static peer-to-peer wiring computed in the host at startup, plus a low-volume control plane for logs/heartbeats/crashes. Publisher process → subscriber process directly, no forwarding process in the data path | proposed |
+| 11 | Brokerless: static peer-to-peer wiring computed in the host at startup, plus a low-volume control plane for logs/heartbeats/crashes. Publisher process → subscriber process directly, no forwarding process in the data path | **ACCEPTED 2026-08-07** |
 | 12 | **`holds.boxes` is SHARED, not exclusive.** Exclusivity decided by a stated criterion — "a topic is exclusive iff its payload is a singleton observation of a unique subject, such that two publishers would make mutually contradictory rather than additive statements" — not by a framework-owned enumeration. Any plugin may declare a topic exclusive | **ACCEPTED 2026-08-07** — §5 prose corrected. Reversibility was decisive: shared→exclusive later is a config change, exclusive→shared later breaks every subscriber's delivery contract |
-| 13 | Payload contracts = framework-shipped frozen dataclasses in `climbcv.contracts` validated at construction, plus `topology` ids checked at **wiring time** (resolver refuses to start on mismatch), plus `api_version` as the single resolution mechanism | proposed |
-| 14 | **Full isolation** — every stage, built-in or third-party, in its own child process; host runs only supervisor/wiring/logging/embedding API. `spawn` forced on all platforms | proposed |
-| 15 | `setup()` runs in the child after spawn; **`__init__` is reserved** so no author ever pickles a model | proposed |
-| 16 | Restart: exponential backoff 0.5→30 s; quarantine after 5 crashes/60 s; 2 attempts for pre-READY setup failures; hangs warned about but never killed | proposed |
+| 13 | Payload contracts = framework-shipped frozen dataclasses in `climbcv.contracts` validated at construction, plus `topology` ids checked at **wiring time** (resolver refuses to start on mismatch), plus `api_version` as the single resolution mechanism | **ACCEPTED 2026-08-07** |
+| 14 | **Full isolation** — every stage, built-in or third-party, in its own child process; host runs only supervisor/wiring/logging/embedding API. `spawn` forced on all platforms | **ACCEPTED 2026-08-07** |
+| 15 | `setup()` runs in the child after spawn; **`__init__` is reserved** so no author ever pickles a model | **ACCEPTED 2026-08-07** |
+| 16 | Restart: exponential backoff 0.5→30 s; quarantine after 5 crashes/60 s; 2 attempts for pre-READY setup failures; hangs warned about but never killed | **ACCEPTED 2026-08-07** |
 | 17 | **Raise the Python floor to 3.11** (stdlib `tomllib`, avoiding a permanent `tomli` dependency imposed on every author) | **ACCEPTED 2026-08-07** — §3 assumption updated from 3.10+ to 3.11+ |
-| 18 | **T1 (queue transport) for v1, with stated T2 preconditions.** The original justification — "T2 is free because `transport` is invisible to authors" — is **withdrawn as wrong**: it is non-breaking at the API level and data corruption at the authoring level (F-11). T2 must not ship without (a) read-only payload arrays and (b) the arrays-stay-valid-for-the-payload's-lifetime guarantee, both now in v1. Measured: T2's win is bandwidth, not zero-copy (memcpy 5.6 µs vs pickle 10.5 µs at 320×240), so copy-out T2 keeps nearly all of it | proposed |
-| 19 | **Payload arrays are immutable and remain valid for the payload's lifetime.** Enforced via `_ARRAY_FIELDS` + `__post_init__` + **`__setstate__`**, arrays normalised to owned C-contiguous buffers | proposed — supersedes guardian B3, whose mechanism was **measured insufficient**: `__post_init__` is bypassed on unpickle and numpy does not preserve `writeable=False` across a pickle round-trip, so B3 as written froze arrays in the publisher and left them writeable in every subscriber — exactly where both of B3's own failure cases live |
-| 20 | **Two plugin roots, user `plugins/` shadowing bundled** (F-3). Duplicate id fatal within a root, shadow across roots with an INFO line. Absorbs S20: built-ins become ordinary directories with real manifests, so the manifest parser is dogfooded rather than bypassed | proposed |
-| 21 | **Conflation is per-subscription** (`conflate = false`), making a correct recorder expressible by third parties and not only by first parties | proposed |
-| 22 | **Deterministic authoring mistakes raise `PluginContractError`** — non-retryable, one message, no app-shutdown escalation. Plus a reserved-name set with a `cv_` prefix, which is what makes future base-class additions genuinely additive | proposed |
-| 23 | **`requires_topology`/`provides_topology` mandatory** for any plugin touching a `PoseFrame` topic, keyed off payload type rather than a name prefix | proposed — closes guardian B4 |
+| 18 | **T1 (queue transport) for v1, with stated T2 preconditions.** The original justification — "T2 is free because `transport` is invisible to authors" — is **withdrawn as wrong**: it is non-breaking at the API level and data corruption at the authoring level (F-11). T2 must not ship without (a) read-only payload arrays and (b) the arrays-stay-valid-for-the-payload's-lifetime guarantee, both now in v1. Measured: T2's win is bandwidth, not zero-copy (memcpy 5.6 µs vs pickle 10.5 µs at 320×240), so copy-out T2 keeps nearly all of it | **ACCEPTED 2026-08-07** |
+| 19 | **Payload arrays are immutable and remain valid for the payload's lifetime.** Enforced via `_ARRAY_FIELDS` + `__post_init__` + **`__setstate__`**, arrays normalised to owned C-contiguous buffers | **ACCEPTED 2026-08-07** — supersedes guardian B3, whose mechanism was **measured insufficient**: `__post_init__` is bypassed on unpickle and numpy does not preserve `writeable=False` across a pickle round-trip, so B3 as written froze arrays in the publisher and left them writeable in every subscriber — exactly where both of B3's own failure cases live |
+| 20 | **Two plugin roots, user `plugins/` shadowing bundled** (F-3). Duplicate id fatal within a root, shadow across roots with an INFO line. Absorbs S20: built-ins become ordinary directories with real manifests, so the manifest parser is dogfooded rather than bypassed | **ACCEPTED 2026-08-07** |
+| 21 | **Conflation is per-subscription** (`conflate = false`), making a correct recorder expressible by third parties and not only by first parties | **ACCEPTED 2026-08-07** |
+| 22 | **Deterministic authoring mistakes raise `PluginContractError`** — non-retryable, one message, no app-shutdown escalation. Plus a reserved-name set with a `cv_` prefix, which is what makes future base-class additions genuinely additive | **ACCEPTED 2026-08-07** |
+| 23 | **`requires_topology`/`provides_topology` mandatory** for any plugin touching a `PoseFrame` topic, keyed off payload type rather than a name prefix | **ACCEPTED 2026-08-07** — closes guardian B4 |
 
 ### Review outcomes accepted 2026-08-07 (inputs to the revision pass)
 
