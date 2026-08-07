@@ -8,7 +8,7 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 
 ## 0. SESSION HANDOFF — read this first (2026-08-07)
 
-**Everything is committed; nothing is lost.** Design phase, late stage. **No code exists yet** — 0 `.py` files, by design: §7 gates implementation behind a review pass. Start here.
+**Everything is committed; nothing is lost.** The design phase is finished and the API is lockable. **No framework code exists yet** — the only `.py` file is `design/verify/payload_immutability.py`, an acceptance test for `payloads.md` §2.2.1, not an implementation. §7 gates implementation behind a review pass. Start here.
 
 ### Where things stand
 
@@ -25,6 +25,10 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 | `2f079cc` | **Decisions #11–#23 all accepted** |
 | `f4a1663` | **`plugin-api.md` finished** — `join=` removed, S12 closed, §7 embedding API designed |
 | `cf8a5eb` | **`design/reviews/guardian-02.md`** — 2 blocking, 9 should-fix, 4 notes; lockability verdict |
+| `c0c355f` | Decision #24 accepted |
+| `071e6bf` | **Blocker 1 closed** — corrected immutability mechanism + `design/verify/payload_immutability.py` |
+| `e0fc743` | **Blocker 2 closed** — `record_kind` declared and checked at three points |
+| `c28f2dc` | **`design/revision-02.md`** — findings 1–2 addressed, 3–15 deferred with costs |
 
 ### Design phase: all eight sections complete
 
@@ -32,7 +36,7 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 
 `design/revision-01.md` is the audit trail. **Coverage: all 47 numbered findings (B1–B5, S6–S23, F-1..F-16, C-1..C-8) have a row, plus the 8 guardian notes, 5 naming rulings and 2 Decision reviews.** Six carry a declined component (F-6, F-16, half of S17, `join=`, and two structural deferrals); three are deferred rather than refused (S9's `retain` kind, F-6's decimation, T2 itself). Read the coverage statement in that file, not a numeric tally — an earlier count reported here did not reconcile against its own table and has been withdrawn.
 
-Decisions **#11–#23 are all ACCEPTED** (§4), with the two qualifications noted there.
+Decisions **#11–#24 are all ACCEPTED** (§4), with the two qualifications noted there — #15 in its corrected form only, and #19's intent standing while its mechanism was replaced twice (see §4).
 
 ### Both blocking findings are CLOSED
 
@@ -57,10 +61,6 @@ Nothing here blocks implementation. All of it is additive, and `design/revision-
 - **Still one uniform authoring model? YES.** "The count grew; the shape did not." What would make it a toolkit is a *second way to be a plugin* — a second base class, lifecycle, mode flag, or a hook only some types implement — and none of the six additions is any of those. It would cut nothing. The honest cost is discoverability, not conceptual load: five of eleven members serve narrow plugin classes and §2 doesn't say which five, which is `docs-and-testing`'s problem.
 - **Verified rather than trusted:** B1, B2, B4, B5 genuinely landed. B3/#19 claimed and false (finding 1).
 - **All six declines upheld**, and both structural deferrals properly argued. Only S9 gets a partial overturn — take the cheap half (finding 12).
-
-### One open question §7 raised and deliberately did not answer
-
-**May two `ClimbCV` instances run in one process?** Nothing forbids it, nothing supports it, and `log_dir` / `state_dir` / the process title would all collide. Proposed v1 answer is one per process with a clear error — flagged as possibly deserving its own Decision Log entry rather than a design paragraph.
 
 ### A bug found in the design itself, worth not losing
 
