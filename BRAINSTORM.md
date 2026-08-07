@@ -87,7 +87,7 @@ Produced by `framework-core` on 2026-08-07; full reasoning in `design/`. **#12 a
 - Proposed Decisions #11–#17 above need user review; #12 and #17 contradict existing written positions.
 - **Transport choice T1 vs T2** (`broker.md` §5.3): queue-transport only in v1 vs. shared-memory ring for `frame` now. `framework-core` recommends T1 — `transport` is invisible in the authoring interface so shm is a non-breaking upgrade later. Quantified ceiling: queue transport adequate to ~640×480 with ≤3 frame subscribers.
 - **Dependency installation** (`loader.md` §6) — the sharpest edge of "no pip install". A plugin needing an absent package is contained with a clear error, but v1 offers nothing more. Recorded as an open risk.
-- `plugin-api-guardian` review of the API surfaces has not run yet.
+- `plugin-api-guardian` review 01 delivered 2026-08-07 → `design/reviews/guardian-01.md`. **5 blocking, 18 should-fix**, plus rulings on the five open naming questions and on Decisions #14/#15. Not yet actioned — a consolidated revision pass is pending, to be run once `plugins-and-config` reports so both sets of findings are addressed together. Headline blockers: `latest()` discards `Meta` (which cancels the premise #12 was accepted on), `PoseFrame` cannot express `mirrored`, payload arrays are mutable, `requires_topology` defaults to unsafe, and author-defined payloads are inexpressible with a silent wrong-class unpickle path. #14 upheld; #15's mechanism upheld but its stated justification is factually wrong and must be corrected before lock.
 - Documentation step (final design doc, plugin-authoring guide) not started.
 
 ## 7. Suggested Next Steps
