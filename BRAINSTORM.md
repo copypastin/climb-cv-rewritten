@@ -69,6 +69,14 @@ Produced by `framework-core` on 2026-08-07; full reasoning in `design/`. **#12 a
 | 16 | Restart: exponential backoff 0.5→30 s; quarantine after 5 crashes/60 s; 2 attempts for pre-READY setup failures; hangs warned about but never killed | proposed |
 | 17 | **Raise the Python floor to 3.11** (stdlib `tomllib`, avoiding a permanent `tomli` dependency imposed on every author) | **ACCEPTED 2026-08-07** — §3 assumption updated from 3.10+ to 3.11+ |
 
+### Review outcomes accepted 2026-08-07 (inputs to the revision pass)
+
+- **C-6 ACCEPTED:** the plugin manifest gains an **optional, informational** `[config] keys = [...]` list — names only, no types, no rejection, ignoring it is legal. Used solely to turn a typo'd plugin option into a nearest-match warning instead of silence, and to let `climbcv init` generate a useful example. Deliberately inside Decision #8's no-validation-layer posture: it never rejects a value.
+- **Naming questions settled** per `design/reviews/guardian-01.md`: keep `setup`/`teardown`, `latest()` (name kept, return type must change), `@every(seconds)`, `finish()` (name kept, contract must document the app-shutdown escalation). **`join=` is cut from v1** — undefined on shared topics, and silently broken against the `frame_seq == -1` replay sentinel, which matters because `replay()` is itself recommended as a plugin. Re-adding it later is a keyword argument with a default, i.e. a clean additive minor.
+- **Decision #14 upheld** on review, with a third argument the design had not made: in-host built-ins would fork the *diagnostic* surface too, so "how do I debug this stage" would depend on who wrote the stage.
+- **Decision #15's mechanism upheld, its justification rejected as factually wrong.** No plugin instance is ever pickled — the child constructs it — so the cited "opaque pickling error at spawn time" cannot occur. The reservation is still correct for a different reason: the framework binds `config`/`log`/`publish`/`latest` after construction, so inside `__init__` none exist. The Decision Log entry and the error text must both be corrected before lock, because the current message teaches authors a false model of what crosses a process boundary.
+- **T1 vs T2 is no longer purely a performance call.** The guardian concurred with T1 on the grounds that `transport` is invisible to plugin authors; `first-party-plugins.md` F-11 refutes that — under T1 mutating `frame.pixels` is harmless (private copy per subscriber), under T2 it corrupts every other subscriber. Payload mutability must therefore be settled *before* T2 can ever ship, or a framework minor bump turns working plugins into data corruption.
+
 ## 5. Chosen Direction (locked 2026-08-07)
 
 **Approach 1, refined: pub/sub event bus with exclusive and shared topics.**
