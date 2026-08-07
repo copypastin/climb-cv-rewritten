@@ -1,0 +1,22 @@
+[plugin]
+id                = "demo_pose"
+version           = "1.0.0"
+api_version       = "1.0"
+entry             = "plugin:DemoPose"
+name              = "Synthetic pose source"
+description       = "Publishes an animated fake skeleton, so the visualisers work without footage of a person."
+author            = "example"
+provides_topology = "mediapipe.pose.33"
+
+# NOTE: pose.raw is an EXCLUSIVE topic -- exactly one publisher, because subscribers compute
+# geometry from a single skeleton and two would contradict each other. So this plugin and
+# core.pose_mediapipe cannot both run. Enabling both is a startup error whose message contains
+# the paste-ready TOML to choose one; the example scripts enable whichever fits the source.
+[[publishes]]
+topic = "pose.raw"
+
+[[subscribes]]
+topic = "frame"
+
+[config]
+keys = ["cycle_frames", "amplitude"]

@@ -1,0 +1,18 @@
+[plugin]
+id                = "pose_plot"
+version           = "1.0.0"
+api_version       = "1.0"
+entry             = "plugin:PosePlot"
+name              = "3D pose plot"
+description       = "Live matplotlib 3D view of the skeleton in world coordinates."
+author            = "example"
+requires_topology = "mediapipe.pose.33"
+
+# Importing matplotlib and building the first 3D axes is slow on a cold start.
+heartbeat_warn_s = 25.0
+
+[[subscribes]]
+topic = "pose.smoothed"
+
+[config]
+keys = ["redraw_hz", "elev", "azim", "limit_m", "trail"]

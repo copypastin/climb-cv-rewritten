@@ -9,8 +9,11 @@ examples/
   02_live_webcam.py           run the full pipeline on a live camera
   climbcv.toml                the same configuration as a file instead of a dict
   plugins/
-    brightness/               a plugin that needs nothing but frames
-    body_tilt/                a plugin that consumes pose data
+    brightness/               needs nothing but frames
+    body_tilt/                consumes pose data
+    exo_live/                 the overlay window: skeleton drawn on the feed
+    pose_plot/                live matplotlib 3D view of the skeleton
+    demo_pose/                a synthetic pose source, replacing the real one
 ```
 
 ## Setup
@@ -35,14 +38,28 @@ imposed on every plugin author's environment.
 ## 1. A video file
 
 ```bash
-python3 examples/01_video_file.py --make-sample     # generates examples/sample.mp4 first
-python3 examples/01_video_file.py path/to/clip.mp4
+python3 examples/01_video_file.py --make-sample          # generates a clip, synthetic pose
+python3 examples/01_video_file.py path/to/clip.mp4       # real footage, real pose model
+python3 examples/01_video_file.py --make-sample --loop   # replay until ESC
+python3 examples/01_video_file.py clip.mp4 --no-display  # headless
 ```
 
-Points `core.capture` at a file instead of a camera. The generated sample contains no person,
-so this example disables the pose stage and watches brightness instead — MediaPipe finding no
-skeleton in synthetic noise would be correct behaviour, not a bug worth demonstrating. Pass
-your own footage for real pose output.
+**Two windows open.** `exo_live` shows the feed with the exo skeleton drawn over it, plus a HUD
+with the frame number, the topology, and how many frames stale the pose is. `pose_plot` shows
+the same skeleton as a live matplotlib 3D plot in world coordinates — metres, origin between
+the hips. Press **ESC** in the overlay to stop the run.
+
+The generated sample contains no person, so `--make-sample` switches the pose stage from
+`core.pose_mediapipe` to `demo_pose`, a synthetic source that publishes an animated skeleton.
+MediaPipe correctly finding nothing in a clip with no human in it is right behaviour and a
+useless demonstration. Pass your own footage to see the real model.
+
+**That switch is the architecture's central claim in one line.** `demo_pose` publishes
+`pose.raw` exactly like `core.pose_mediapipe`, and nothing downstream — smoothing, the overlay,
+the 3D plot, `body_tilt` — knows or cares which one is running. Replacing a core stage and
+adding a plugin are the same mechanism. Because `pose.raw` is *exclusive*, enabling both at once
+is a startup error rather than a silent coin flip; flip both to `true` in the script to see the
+message, which hands you the TOML to choose one.
 
 Watch for the end: reaching the end of a file is an **orderly completion**, and because
 `core.capture` is the only publisher of `frame`, the run then ends with a message saying
@@ -130,6 +147,35 @@ plugins.
 
 **Timer intervals are fixed at class-definition time.** `@every(2.0)` cannot read your config.
 Use `self.set_interval(self.handler, seconds)` from `setup()` for a configurable rate.
+
+**If you own a window, stash on the handler and draw on a tick.** This is the one that looks
+correct on the page and fails in practice, so both `exo_live` and `pose_plot` demonstrate it:
+
+```python
+@subscribe("frame")
+def on_frame(self, frame, meta):
+    self._frame = frame          # stash only, never draw here
+
+@every(1 / 60)
+def draw(self):
+    cv2.imshow(self._window, ...)
+    cv2.waitKey(1)               # THIS is the GUI pump
+```
+
+Drawing in the handler means the window is only pumped when data arrives — so it freezes the
+moment the pipeline pauses, and the OS reports your app as not responding however healthy the
+pipeline is. `plt.pause(0.001)` is matplotlib's equivalent of `cv2.waitKey`; leaving it out is
+the same bug.
+
+**Combine several inputs with `latest()`, not with a second handler.** `exo_live` subscribes to
+frames at 30 Hz, poses whenever the pose stage finishes, and the lid angle about once a second.
+Synchronising those in handlers means keeping state and guessing; `self.latest(topic)` gives you
+the newest of each at the moment you draw. Declare `mode = "latest"` on such a subscription so
+the framework knows you meant to have no handler.
+
+**Skeleton edges come from the framework.** `climbcv.topology.edges_for(topology)` returns the
+landmark pairs to draw, read from MediaPipe itself rather than transcribed — so every visualiser
+draws the same skeleton and none of them hardcodes a private copy.
 
 ## 4. Configuration
 

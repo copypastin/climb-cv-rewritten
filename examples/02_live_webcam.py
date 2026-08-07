@@ -43,6 +43,12 @@ def main() -> None:
             "core.smooth_oneeuro": {"min_cutoff": 1.0, "beta": 0.3},
             "brightness": {"report_every_s": 5.0},
             "body_tilt": {"min_visibility": 0.5},
+            # The two windows: overlay + live 3D. Both run in their own processes, so a slow
+            # matplotlib redraw cannot stall the capture loop.
+            "exo_live": {"scale": 1.2, "draw_hz": 60},
+            "pose_plot": {"redraw_hz": 15, "limit_m": 1.0},
+            # Only one publisher of pose.raw may run, and here it is the real model.
+            "demo_pose": {"enabled": False},
         },
     })
 
@@ -63,7 +69,8 @@ def main() -> None:
     # your own traceback names the exact line. "any" opts out when you do not index joints.
     app.subscribe("pose.smoothed", on_pose, required=False, requires_topology="any")
 
-    print("starting — stand in front of the camera. Ctrl-C to stop.\n")
+    print("starting — stand in front of the camera.\n"
+          "Two windows open: overlay and 3D pose. ESC in the overlay (or Ctrl-C) stops.\n")
     app.start()
 
     try:

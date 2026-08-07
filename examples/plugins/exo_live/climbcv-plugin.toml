@@ -1,0 +1,36 @@
+[plugin]
+id                = "exo_live"
+version           = "1.0.0"
+api_version       = "1.0"
+entry             = "plugin:ExoLive"
+name              = "Live exo-skeleton overlay"
+description       = "Shows the camera feed with the skeleton drawn over it. ESC to stop."
+author            = "example"
+requires_topology = "mediapipe.pose.33"
+
+# Opening a window and building the first frame can take a moment on a cold start.
+heartbeat_warn_s = 20.0
+
+# ESC in the window asks the whole run to stop. Anyone may publish this -- it is a request,
+# not a guarantee, which is why the topic is shared rather than exclusive.
+[[publishes]]
+topic = "app.shutdown"
+
+[[subscribes]]
+topic = "frame"
+
+# mode = "latest" declares "I read this with latest(), not with a handler". Without it the
+# framework warns about a subscription that has no handler -- which is exactly the pattern it
+# recommends for combining inputs, so the declaration is how you say you meant it.
+[[subscribes]]
+topic = "pose.smoothed"
+mode  = "latest"
+
+# Optional: absent on Linux and Windows, and this plugin runs fine without it.
+[[subscribes]]
+topic    = "device.lid_angle"
+required = false
+mode     = "latest"
+
+[config]
+keys = ["window_name", "scale", "point_radius", "line_width", "show_fps"]
