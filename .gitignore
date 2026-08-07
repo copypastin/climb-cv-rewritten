@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# macOS
+.DS_Store
+
+# Recorded landmark sessions (regenerable output, can be large)
+*.npy
+
+# Model weights — fetched, not versioned
+*.pt
+*.task
+*.tflite

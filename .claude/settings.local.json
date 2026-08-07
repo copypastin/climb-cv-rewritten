@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find / -maxdepth 4 -iname \"*security-review*\")",
+      "Bash(find / -maxdepth 6 -iname \"*aas*catalog*\" -o -iname \"*aas-stack*\")",
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "Bash(ls -a && echo \"---agents\\(project\\)---\" && ls -a .claude/agents 2>/dev/null && echo \"---agents\\(user\\)---\" && ls ~/.claude/agents 2>/dev/null | head -50)",
+      "WebFetch(domain:github.com)",
+      "Bash(python3 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(read f *)",
+      "Bash([ -f \"design/$f\" ])"
+    ]
+  }
+}
