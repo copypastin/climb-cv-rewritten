@@ -1,6 +1,6 @@
 # climb-cv Plugin Architecture — Brainstorm Summary
 
-Status: **architecture locked (Decision #9); revision pass complete at `2a40560` except `plugin-api.md`, which is unfinished and self-contradictory. NOT lockable — second guardian pass required.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
+Status: **architecture locked (Decision #9); all 8 design sections complete and internally consistent at `f4a1663`; Decisions #11–#23 accepted. NOT yet locked — one guardian pass outstanding, then implementation's own review gate.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
 
 Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-cv) (Aaron's existing project).
 
@@ -22,24 +22,28 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 | `372673c` | Partial revision (interrupted): 5 files, +2098/−261 |
 | `2a40560` | Revision completed — `config-contract.md` finished, `design/revision-01.md` audit trail added |
 | `f1e2f2a` | Decisions #18–#23 recorded here |
+| `2f079cc` | **Decisions #11–#23 all accepted** |
+| `f4a1663` | **`plugin-api.md` finished** — `join=` removed, S12 closed, §7 embedding API designed |
 
-### Where the revision pass got to
+### Design phase: all eight sections complete
 
-**Revision pass complete as of `2a40560`**, with one concentrated gap. `design/revision-01.md` is the per-finding audit trail: **48 addressed, 2 partial, 6 declined, 3 deferred, 1 not reached.** `config-contract.md` is finished (C-1..C-8 plus all four of `config.md` §13's asks, all accepted). Decisions #18–#23 came out of this pass; all of #11–#23 are now ACCEPTED (§4).
+`design/` holds `broker.md`, `payloads.md`, `loader.md`, `isolation.md`, `plugin-api.md`, `config-contract.md` (`framework-core`) and `first-party-plugins.md`, `config.md` (`plugins-and-config`), plus `reviews/guardian-01.md` and `revision-01.md`. All internally consistent as of `f4a1663`: no section references a section that does not exist, and every review finding has a landing site.
 
-**The one remaining gap is `plugin-api.md`, and it is the highest-priority review target in the project:**
+`design/revision-01.md` is the audit trail. **Coverage: all 47 numbered findings (B1–B5, S6–S23, F-1..F-16, C-1..C-8) have a row, plus the 8 guardian notes, 5 naming rulings and 2 Decision reviews.** Six carry a declined component (F-6, F-16, half of S17, `join=`, and two structural deferrals); three are deferred rather than refused (S9's `retain` kind, F-6's decimation, T2 itself). Read the coverage statement in that file, not a numeric tally — an earlier count reported here did not reconcile against its own table and has been withdrawn.
 
-- **§3.6–§3.11, §5 and §7 were never written**, though §2/§2.1 reference them. Almost every "not reached" caveat in `revision-01.md` points here rather than being spread across files — the gap is one file, not a scatter.
-- **§4.3 still documents `join=`** despite ruling #4 cutting it, and §6 still lists it as an open question. **The file authors read currently teaches a cut feature and contradicts itself.** This is the sharpest single item.
-- **§4.2 still says "a decrease in `seq` means publisher restarted"** without the `meta.source` keying (S12 partial) — corrected where it is *stated* (`payloads.md` §2.3, `broker.md` §5.4) but not where it is *taught*.
-- **S19 (the embedding API) is the largest outstanding design gap.** Only the verification half landed: `isolation.md` §2.4 records the empirically confirmed `spawn`-from-notebook result, and `broker.md` §6 reserves `WiringPlan.host: HostPlan | None` with §4.2 step 2 admitting `<host>` as a candidate publisher. The design section (`plugin-api.md` §7) does not exist, so `<host>` still has no manifest equivalent, no declared subscriptions, no `requires_topology`, and no place in the resolution rules — while being a public data-plane participant visible in the CLI output.
+Decisions **#11–#23 are all ACCEPTED** (§4), with the two qualifications noted there.
 
 ### Do these next, in order
 
-1. **Finish `plugin-api.md`** — write §3.6–§3.11, §5, §7; delete `join=` from §4.3 and §6; apply the `meta.source` keying to §4.2. `revision-01.md` names what each unwritten section was to contain, and the intended shape of §7 is in the resumed agent's final summary.
-2. **Second `plugin-api-guardian` pass.** `framework-core`'s own verdict is **not lockable** — partly because `plugin-api.md` is self-contradictory, partly because the surface genuinely grew: the base class went from 7 members to 11, `[[subscribes]]` gained three keys, `[topics]` gained three. That is new author-facing surface deserving review on its own merits, not as deltas.
-3. **Then** `docs-and-testing`, which has deliberately never run.
-4. Implementation stays gated behind §7 step 2's multi-agent review.
+1. **Second `plugin-api-guardian` pass** — the remaining gate before the API can be called locked. `framework-core` considers the surfaces ready and named two things a reviewer is better placed to judge than the author:
+   - **The base class grew from 7 members to 11**, `[[subscribes]]` gained three keys, `[topics]` gained three. Every addition has a finding and a first-party need behind it and §2's table says which — but "each addition was justified individually" is precisely how a surface creeps, and whether the *total* is still one uniform authoring model is not a judgement its author can make.
+   - **`plugin-api.md` §7 (the embedding API) is new and largely underived.** The host has no manifest, so most of §7 was invented rather than derived; §7.7 tables what was decided versus derived. It is the section most likely to hold a choice that reads fine alone and wrong against the rest of the system.
+2. **Then `docs-and-testing`**, which has deliberately never run.
+3. Implementation stays gated behind §7 step 2's multi-agent review.
+
+### One open question §7 raised and deliberately did not answer
+
+**May two `ClimbCV` instances run in one process?** Nothing forbids it, nothing supports it, and `log_dir` / `state_dir` / the process title would all collide. Proposed v1 answer is one per process with a clear error — flagged as possibly deserving its own Decision Log entry rather than a design paragraph.
 
 ### A bug found in the design itself, worth not losing
 
