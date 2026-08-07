@@ -223,32 +223,93 @@ def test_capture_reports_a_missing_source_as_unavailable_not_a_crash(tmp_path):
         app.stop()
 
 
-@pytest.mark.e2e
-def test_full_pipeline_capture_to_pose_to_smoothed(tmp_path):
-    """The whole vertical slice in three processes. Skipped if the pose model cannot be
-    obtained, since that needs network on first run."""
-    pytest.importorskip("mediapipe")
+# A synthetic pose stage. The bundled MediaPipe plugin cannot stand in here: a generated test
+# clip contains no human, so MediaPipe correctly finds no pose and never publishes -- which
+# tests nothing about the framework. This proves what the framework is actually responsible
+# for: three processes chained, topology carried through a transform stage, and the
+# immutability guarantee surviving two hops.
+FAKE_POSE = '''
+import numpy as np
+from climbcv import Plugin, subscribe
+from climbcv.contracts import PoseFrame
+
+
+class FakePose(Plugin):
+    @subscribe("frame")
+    def on_frame(self, frame, meta):
+        world = np.full((33, 4), frame.seq * 0.001, dtype=np.float32)
+        self.publish("pose.raw", PoseFrame(
+            frame_seq=frame.seq, t_capture_ns=frame.t_capture_ns,
+            topology="mediapipe.pose.33", mirrored=frame.mirrored,
+            world=world, image=None, smoothed=False,
+        ))
+'''
+
+
+def test_three_process_chain_capture_to_pose_to_smoothed(tmp_path):
+    """capture -> pose -> smooth -> host, in three child processes plus the host."""
+    from test_runtime import make
+
     video = tmp_path / "clip.mp4"
-    make_video(video, frames=60)
+    make_video(video, frames=40)
+    make(tmp_path / "plugins", "fake_pose", FAKE_POSE,
+         publishes=("pose.raw",), subscribes=("frame",),
+         extra='provides_topology = "mediapipe.pose.33"\nrequires_topology = "any"\n')
+
     app = ClimbCV(cfg_for(tmp_path, **{
-        "core.capture": {"source": str(video), "mirror": False, "loop": True, "fps": 20},
+        "core.capture": {"source": str(video), "mirror": True, "loop": True, "fps": 30},
+        "core.pose_mediapipe": {"enabled": False},
     }))
     got: list[PoseFrame] = []
     app.subscribe("pose.smoothed", lambda p, m: got.append(p),
                   required=False, requires_topology="mediapipe.pose.33")
     try:
         app.start()
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline and not got:
-            app.poll(0.05)
-            state = app.states.get("core.pose_mediapipe")
-            if state is not None and state.state in ("unavailable", "quarantined"):
-                pytest.skip(f"pose stage unavailable here: {state.detail[:200]}")
-        assert got, "no smoothed pose reached the host"
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline and len(got) < 3:
+            app.poll(0.02)
+        assert got, "no smoothed pose reached the host through three processes"
         pose = got[0]
-        assert pose.topology == "mediapipe.pose.33"
+        assert pose.topology == "mediapipe.pose.33", "topology must survive the transform stage"
         assert pose.world.shape == (33, 4)
         assert pose.smoothed is True
-        assert not pose.world.flags.writeable, "payload arrived mutable after two hops"
+        assert pose.mirrored is True, "mirrored must be carried so hands can be told apart"
+        assert not pose.world.flags.writeable, "arrays arrived mutable after two hops"
+    finally:
+        app.stop()
+
+
+@pytest.mark.e2e
+def test_real_mediapipe_pipeline_on_supplied_footage(tmp_path):
+    """The bundled pose plugin against real footage containing a person.
+
+    Set CLIMBCV_TEST_VIDEO to a clip with a visible human. Skipped otherwise: a generated clip
+    contains no body, so MediaPipe finding nothing in it would be correct behaviour and a
+    useless assertion. Sustained 30fps on a real webcam still needs a human at the keyboard.
+    """
+    import os
+
+    src = os.environ.get("CLIMBCV_TEST_VIDEO")
+    if not src or not Path(src).is_file():
+        pytest.skip("set CLIMBCV_TEST_VIDEO to a video file containing a person")
+    pytest.importorskip("mediapipe")
+
+    app = ClimbCV(cfg_for(tmp_path, **{
+        "core.capture": {"source": src, "mirror": False, "fps": 30},
+    }))
+    got: list[PoseFrame] = []
+    app.subscribe("pose.smoothed", lambda p, m: got.append(p),
+                  required=False, requires_topology="mediapipe.pose.33")
+    try:
+        app.start()
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and len(got) < 5:
+            app.poll(0.02)
+            state = app.states.get("core.pose_mediapipe")
+            if state is not None and state.state in ("unavailable", "quarantined"):
+                pytest.skip(f"pose stage unavailable: {state.detail[:200]}")
+        assert got, "no smoothed pose from real footage"
+        assert got[0].world.shape == (33, 4)
+        assert np.isfinite(got[0].world).all()
     finally:
         app.stop()
