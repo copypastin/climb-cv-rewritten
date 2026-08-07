@@ -79,6 +79,7 @@ class Supervisor:
         self._host_callbacks: dict[str, list[Callable]] = {}
         self._log_thread: threading.Thread | None = None
         self._has_run = False
+        self._stopped = False
         self._stop_reason = ""
 
     # ---------------------------------------------------------------- lifecycle
@@ -100,6 +101,21 @@ class Supervisor:
                 )
             Supervisor._running = self
             self._has_run = True
+
+        if mp.parent_process() is not None:
+            # Caught on the FIRST re-entry, before processes can multiply. Without this the
+            # author sees multiprocessing's raw bootstrap RuntimeError, which never mentions
+            # climb-cv and buries the fix in a wall of text about freeze_support().
+            raise RuntimeError(
+                "climb-cv is being started from inside a spawned child process, which means "
+                "your script runs it at import time.\n\n"
+                "Python's 'spawn' start method re-imports your __main__ module in every child, "
+                "so anything at module scope runs again there. Put the run behind a guard:\n\n"
+                "    if __name__ == \"__main__\":\n"
+                "        ClimbCV().run()\n\n"
+                "In a Jupyter notebook this does not apply — there is no __main__ file to "
+                "re-import — so calling run() in a cell is fine."
+            )
 
         self._control = self._ctx.Queue()
         self._log_queue = self._ctx.Queue()
@@ -127,7 +143,17 @@ class Supervisor:
         if self._shutdown is None:
             return
         self._stop_reason = self._stop_reason or reason
+        self._stopped = True
         self._shutdown.set()
+
+        # Drain before joining: a child trying to report its exit on a full control queue
+        # would otherwise never get to exit, and we would terminate a plugin that was doing
+        # exactly the right thing.
+        for _ in range(200):
+            try:
+                self._control.get_nowait()
+            except Exception:
+                break
 
         grace = float(self.framework.get("grace_s", 2.0))
         for state in self.states.values():
@@ -225,6 +251,8 @@ class Supervisor:
     # ---------------------------------------------------------------- supervision
 
     def poll(self, timeout: float = 0.0) -> None:
+        if self._stopped:
+            return
         """Process control messages and host deliveries. Call from the host's own loop.
 
         Exists so an embedder owning a GUI can drain on *their* thread rather than being
@@ -232,8 +260,12 @@ class Supervisor:
         """
         deadline = time.monotonic() + timeout
         while True:
+            remaining = deadline - time.monotonic()
             try:
-                pid, kind, detail = self._control.get(timeout=max(0.0, deadline - time.monotonic()))
+                if remaining > 0:
+                    pid, kind, detail = self._control.get(timeout=remaining)
+                else:
+                    pid, kind, detail = self._control.get_nowait()
             except (queue.Empty, OSError):
                 break
             self._handle_control(pid, kind, detail)

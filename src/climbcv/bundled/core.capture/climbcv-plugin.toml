@@ -1,0 +1,17 @@
+[plugin]
+id          = "core.capture"
+version     = "0.1.0"
+api_version = "1.0"
+entry       = "plugin:Capture"
+name        = "Camera capture"
+description = "Reads frames from a webcam or a video file and publishes them."
+author      = "climb-cv"
+
+[[publishes]]
+topic = "frame"
+
+# Informational only: never validated, never rejects a value. It exists so a typo'd option
+# gets a nearest-match warning instead of silence, and so `climbcv init` can generate a
+# useful example.
+[config]
+keys = ["device", "source", "width", "height", "mirror", "fps", "loop"]

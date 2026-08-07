@@ -16,6 +16,7 @@ import logging
 import logging.handlers
 import queue
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -123,7 +124,15 @@ class _Runtime:
             try:
                 q.put_nowait((meta, payload))
             except queue.Full:
-                pass  # never block the publisher; the topic's kind decides what is lost
+                # Drop the OLDEST, not the newest. A conflating stream means "the latest value
+                # wins", so discarding the message we are holding would keep stale frames and
+                # throw away fresh ones -- the exact opposite of the intent, and invisible
+                # except as mysterious latency. Never block the publisher either way.
+                try:
+                    q.get_nowait()
+                    q.put_nowait((meta, payload))
+                except (queue.Empty, queue.Full):
+                    pass
 
     def latest(self, topic: str) -> Any | None:
         self._check_subscribed(topic, "latest")
@@ -174,6 +183,18 @@ def child_main(
 
     # The plugin's own directory goes first so `entry = "plugin:Thing"` resolves, and its
     # vendor/ dir after, so a vendored dependency is importable without touching site-packages.
+    # Never block our own exit flushing messages nobody will read. Without this, a child whose
+    # subscriber has already exited hangs in Queue's feeder-thread join at interpreter shutdown;
+    # the supervisor then has to terminate it, and terminating a process that holds a queue lock
+    # wedges that queue for the host too -- turning one slow plugin into a frozen app.
+    for _targets in out_queues.values():
+        for _q in _targets:
+            _q.cancel_join_thread()
+    # NOT the control or log queues. They are unbounded and the host drains them, so their
+    # feeder cannot block -- and they carry the one message that must never be lost: this
+    # plugin's own exit report. Cancelling their join discards it, which makes a plugin that
+    # cleanly declared itself unavailable look like it is still starting, forever.
+
     sys.path.insert(0, spec.directory)
     vendor = Path(spec.directory) / "vendor"
     if vendor.is_dir():
@@ -236,19 +257,36 @@ def child_main(
 
     _send(control, spec.plugin_id, READY)
 
+    # The heartbeat runs on a framework-owned daemon thread, NOT from the dispatch loop.
+    # A source is written as `@every(0)` with a blocking read inside -- the design explicitly
+    # blesses that shape -- so a loop-driven heartbeat would never fire while such a plugin was
+    # doing exactly what it is supposed to, and the supervisor would report it stalled while it
+    # was perfectly healthy. Verified: core.capture tripped the stall warning on its first run.
+    # This does not leak concurrency into the authoring model: no author writes or sees it.
+    def _beat() -> None:
+        # POLL is_set(), never wait(). A child that calls Event.wait() registers itself as a
+        # sleeper on the shared multiprocessing Condition; if the supervisor then has to
+        # terminate that child, the host's own Event.set() blocks forever inside notify_all(),
+        # waiting for an acknowledgement from a process that no longer exists. That deadlocks
+        # the supervisor -- the one process whose survival everything depends on -- and it was
+        # reproducible here: `stop()` hung in synchronize.py notify() with four plugins gone.
+        # is_set() takes the lock only momentarily and never registers as a waiter.
+        while not shutdown_event.is_set():
+            time.sleep(_HEARTBEAT_INTERVAL_S)
+            if shutdown_event.is_set():
+                return
+            _send(control, spec.plugin_id, HEARTBEAT)
+
+    threading.Thread(target=_beat, name=f"beat-{spec.plugin_id}", daemon=True).start()
+
     intervals = {fn.__name__: sec for fn, sec in timers}
     intervals.update(rt._intervals)
     next_due = {name: time.monotonic() for name in intervals}
-    last_beat = 0.0
     exit_kind, exit_detail = FINISHED, "shutdown"
 
     try:
         while not shutdown_event.is_set():
             now = time.monotonic()
-            if now - last_beat >= _HEARTBEAT_INTERVAL_S:
-                _send(control, spec.plugin_id, HEARTBEAT)
-                last_beat = now
-
             # A zero-interval timer is a source: run it flat out and do not sleep.
             hot = any(intervals[n] == 0.0 for n in intervals)
             timeout = 0.0 if hot else _timeout_until(next_due, intervals, now)

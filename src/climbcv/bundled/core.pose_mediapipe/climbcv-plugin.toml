@@ -1,0 +1,22 @@
+[plugin]
+id                = "core.pose_mediapipe"
+version           = "0.1.0"
+api_version       = "1.0"
+entry             = "plugin:MediaPipePose"
+name              = "MediaPipe pose estimation"
+description       = "Estimates one skeleton per frame using MediaPipe PoseLandmarker."
+author            = "climb-cv"
+provides_topology = "mediapipe.pose.33"
+requires          = ["mediapipe>=0.10"]
+
+# The model download plus GPU delegate probe can take a few seconds on a cold start.
+heartbeat_warn_s = 30.0
+
+[[publishes]]
+topic = "pose.raw"
+
+[[subscribes]]
+topic = "frame"
+
+[config]
+keys = ["model_path", "delegate", "min_pose_detection_confidence", "min_tracking_confidence"]

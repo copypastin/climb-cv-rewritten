@@ -139,7 +139,7 @@ def _require_str(table: dict, key: str, where: str) -> str:
     return val
 
 
-def _validate_id(pid: str, where: str) -> None:
+def _validate_id(pid: str, where: str, root: str = "user") -> None:
     if len(pid) > ID_MAX_LEN:
         raise ManifestError(f"{where}: id {pid!r} is over {ID_MAX_LEN} chars")
     if not ID_RE.match(pid):
@@ -150,12 +150,16 @@ def _validate_id(pid: str, where: str) -> None:
         )
     if pid in RESERVED_IDS:
         raise ManifestError(f"{where}: id {pid!r} is reserved by the framework")
-    for prefix in RESERVED_ID_PREFIXES:
-        if pid.startswith(prefix):
-            raise ManifestError(
-                f"{where}: id {pid!r} uses the reserved prefix {prefix!r}. "
-                "Those belong to plugins shipped with climb-cv."
-            )
+    # Reserved for plugins shipped with climb-cv -- which means the bundled root must be
+    # allowed to use them, or the first-party plugins are unloadable by their own rule.
+    if root != "bundled":
+        for prefix in RESERVED_ID_PREFIXES:
+            if pid.startswith(prefix):
+                raise ManifestError(
+                    f"{where}: id {pid!r} uses the reserved prefix {prefix!r}. "
+                    "Those belong to plugins shipped with climb-cv. Drop the prefix — "
+                    f"{pid.split('.', 1)[-1]!r} is fine."
+                )
 
 
 def _parse_publish(raw: dict, where: str, warnings: list[str]) -> Publish:
@@ -291,7 +295,7 @@ def parse_manifest(path: Path, root: str) -> Manifest:
     )
 
     pid = _require_str(plugin, "id", f"{where} [plugin]")
-    _validate_id(pid, f"{where} [plugin]")
+    _validate_id(pid, f"{where} [plugin]", root)
 
     version = _require_str(plugin, "version", f"{where} [plugin]")
     if not SEMVER_RE.match(version):

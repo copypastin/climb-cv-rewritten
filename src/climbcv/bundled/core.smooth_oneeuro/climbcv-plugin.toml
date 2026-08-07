@@ -1,0 +1,25 @@
+[plugin]
+id          = "core.smooth_oneeuro"
+version     = "0.1.0"
+api_version = "1.0"
+entry       = "plugin:SmoothOneEuro"
+name        = "One Euro smoothing"
+description = "Smooths pose landmarks with a One Euro filter."
+author      = "climb-cv"
+
+# This stage indexes no joints -- a One Euro filter treats every column identically -- so it
+# opts out of the topology check on the way in and passes through whatever it received on the
+# way out. Declaring a single provides_topology would be a lie, and would quarantine this
+# plugin the moment a third-party pose plugin provides a different one. Since this is the
+# exclusive publisher of pose.smoothed with required subscribers, that would end the run.
+requires_topology = "any"
+provides_topology = ["mediapipe.pose.33", "coco.17"]
+
+[[publishes]]
+topic = "pose.smoothed"
+
+[[subscribes]]
+topic = "pose.raw"
+
+[config]
+keys = ["freq", "min_cutoff", "beta", "d_cutoff", "passthrough"]

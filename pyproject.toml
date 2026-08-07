@@ -29,4 +29,10 @@ packages = ["src/climbcv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["slow: spawns real OS processes"]
+markers = [
+    "slow: spawns real OS processes",
+    "e2e: needs network on first run and minutes of CPU inference; run with -m e2e",
+]
+# The default run stays fast. The e2e pipeline test downloads a model and does real pose
+# inference, so it is opt-in: `pytest -m e2e`.
+addopts = "-m 'not e2e'"
