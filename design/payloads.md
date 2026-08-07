@@ -81,45 +81,102 @@ array fields once**, in a class variable, and both the construction path and the
 iterate that one list:
 
 ```python
+def _own_readonly(arr: np.ndarray) -> np.ndarray:
+    """C-contiguous, OWNS its buffer, flagged read-only.
+
+    Ownership is tested with flags["OWNDATA"], NOT `arr.base is not None`:
+    np.ascontiguousarray returns the SAME object for a contiguous view, so an
+    ownership test built on it never copies and the payload keeps a live view
+    onto a caller-owned buffer.
+    """
+    if not arr.flags["OWNDATA"] or not arr.flags["C_CONTIGUOUS"]:
+        arr = np.array(arr, copy=True, order="C")
+    arr.flags.writeable = False
+    return arr
+
+
+def _own_readonly_tree(obj):
+    """Recursive form, for Record.data's nested ndarray leaves."""
+    if isinstance(obj, np.ndarray):
+        return _own_readonly(obj)
+    if isinstance(obj, dict):
+        return {k: _own_readonly_tree(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return tuple(_own_readonly_tree(v) for v in obj)
+    return obj
+
+
 class _Arrays:
-    """Mixin. Every array-bearing contract type lists its array fields in _ARRAY_FIELDS
-    and inherits both halves of the read-only guarantee from here."""
-    _ARRAY_FIELDS: ClassVar[tuple[str, ...]] = ()
+    """Mixin. Declares which fields hold arrays and provides the adopt step.
+    It must NOT define __setstate__ -- see @payload below."""
+    _ARRAY_FIELDS: ClassVar[tuple[str, ...]] = ()   # top-level ndarray fields
+    _TREE_FIELDS:  ClassVar[tuple[str, ...]] = ()   # fields whose contents are walked
 
     def _adopt_arrays(self) -> None:
         for name in self._ARRAY_FIELDS:
             arr = getattr(self, name)
-            if arr is None:
-                continue
-            # Own the buffer: copy only if the input is a view or non-contiguous.
-            # np.ascontiguousarray is a no-op (returns the same object) when it is
-            # already C-contiguous and owns its data.
-            if arr.base is not None or not arr.flags["C_CONTIGUOUS"]:
-                arr = np.ascontiguousarray(arr)
-                object.__setattr__(self, name, arr)
-            arr.flags.writeable = False
+            if arr is not None:
+                object.__setattr__(self, name, _own_readonly(arr))
+        for name in self._TREE_FIELDS:
+            obj = getattr(self, name)
+            if obj is not None:
+                object.__setattr__(self, name, _own_readonly_tree(obj))
 
-    def __setstate__(self, state):          # <-- see the finding below
-        _default_setstate(self, state)
+
+def payload(cls):
+    """Apply OUTSIDE @dataclass:  @payload over @dataclass(frozen=True, slots=True).
+
+    @dataclass(frozen=True, slots=True) installs its own __setstate__ into the class
+    __dict__, which SHADOWS an inherited one: CPython's dataclasses._add_slots guards
+    on `if '__setstate__' not in cls_dict`, and an inherited method is not in cls_dict.
+    So the mixin cannot carry __setstate__. This wraps whatever dataclasses installed
+    rather than reimplementing it, so it cannot drift with the CPython version.
+    """
+    inner = cls.__setstate__
+
+    def __setstate__(self, state):
+        inner(self, state)
         self._adopt_arrays()
+
+    cls.__setstate__ = __setstate__
+    return cls
 ```
 
-`__post_init__` calls `_adopt_arrays()` after the structural checks.
+Each type is then `@payload` over `@dataclass(frozen=True, slots=True)`, declares its
+`_ARRAY_FIELDS` (and `_TREE_FIELDS`, which only `Record` uses), and calls `_adopt_arrays()` from
+`__post_init__` after the structural checks.
 
-**The finding that makes `__setstate__` load-bearing, and that both reviews missed.** Guardian B3
-recommends setting `writeable = False` in `__post_init__`. Measured: that is **not sufficient**, and it
-fails on exactly the side where B3's own failure cases live.
+**Why the guarantee needs all three parts, each found by measurement rather than reading.** This
+mechanism has been wrong twice; both fixes were real and neither was sufficient alone.
 
-- A frozen `slots=True` dataclass pickles via `__reduce_ex__` → `__newobj__` + state, which **bypasses
-  `__init__` and therefore `__post_init__`.**
-- `numpy` does not preserve the `writeable` flag across a pickle round-trip: a read-only array pickles
-  and unpickles **writeable**.
+1. **Guardian B3's `writeable = False` in `__post_init__` is not enough.** A frozen `slots=True`
+   dataclass pickles via `__reduce_ex__` → `__newobj__` + state, which **bypasses `__init__` and
+   therefore `__post_init__`** — and `numpy` does not preserve the `writeable` flag across a pickle
+   round-trip, so a read-only array unpickles **writeable**. B3 alone freezes the array in the
+   *publisher*, which has no reason to touch it again, and leaves it writeable in *every subscriber* —
+   exactly where B3's own `stabilize` and `latest()`-cache-corruption cases happen.
+2. **`__setstate__` on the `_Arrays` mixin is silently shadowed** (guardian-02 finding 1, verified by
+   execution). `_add_slots` installs its own `__setstate__` into the subclass `__dict__` and its guard
+   only checks `cls_dict`, where an inherited method never appears. So the mixin's version never runs,
+   and the observable behaviour is identical to having no fix at all. Hence `@payload` *outside*
+   `@dataclass`, wrapping rather than replacing.
+3. **`arr.base is not None` is the wrong ownership test** (same finding). `np.ascontiguousarray`
+   returns the same object for a contiguous view, so the copy branch never fired and consequence 1
+   below was false: a publisher preallocating `ring`, publishing `ring[:33]`, then writing `ring`
+   mutated what the subscriber received, because `publish()` is asynchronous and the feeder thread had
+   not serialised yet. `flags["OWNDATA"]` is the correct test.
 
-So `__post_init__` alone freezes the array in the *publisher* — the process that just finished
-producing it and has no reason to touch it again — and leaves it writeable in *every subscriber*, which
-is where B3's `stabilize` (mutate and expect downstream to see it) and `latest()`-cache-corruption
-cases both happen. `__setstate__` closes it. Cost measured at 0.23 µs per array per delivery, i.e.
-2 % of the 10.5 µs it costs to pickle one 320×240 frame.
+Cost: 0.23 µs per array per delivery, i.e. 2 % of the 10.5 µs it costs to pickle one 320×240 frame.
+
+**Acceptance criterion — `design/verify/payload_immutability.py`.** The mechanism above is
+transcribed there exactly as a reader would implement it, and asserts: `__setstate__` resolves to the
+wrapped one for all seven types; arrays are read-only in the publisher; **read-only survives
+`pickle.loads(pickle.dumps(x))`**; a subscriber's `frame.pixels[:] = 9` raises; the `OWNDATA` test
+copies an aliasing view and survives a round-trip; `Record.data`'s nested arrays are read-only at
+every depth while non-array leaves are untouched; every `ndarray`-annotated field is declared; and
+non-contiguous input is copied rather than rejected. Verified passing on Python 3.13.11 / numpy 2.4.1.
+**Run it before treating this section as true** — two plausible-reading mechanisms have already failed
+here, and the round-trip assertion is the one that catches the next `_ARRAY_FIELDS` omission.
 
 **Three consequences to state, because each is author-visible:**
 
@@ -134,7 +191,9 @@ cases both happen. `__setstate__` closes it. Cost measured at 0.23 µs per array
    plugin becomes a loud failure instead of a silent no-op.
 3. **Every array in a payload is C-contiguous and owns its buffer.** This is a promise, not an
    accident, and it is what lets `as_bgr()` (§3.1), the `Record` recursion (§3.6), and a future
-   shared-memory transport (`broker.md` §5.3) all assume a flat buffer.
+   shared-memory transport (`broker.md` §5.3) all assume a flat buffer. Consequence 1's race-closing
+   claim depends on the `OWNDATA` test specifically; with the earlier `base is not None` test the
+   promise was stated and false.
 
 ### 2.3 The envelope — provenance the author never constructs
 
