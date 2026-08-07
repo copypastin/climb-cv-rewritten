@@ -25,8 +25,13 @@ class Capture(Plugin):
         device = self.config.get("device", 0)
         self._loop = bool(self.config.get("loop", False))
         self._mirror = bool(self.config.get("mirror", True))
-        self._fps_cap = float(self.config.get("fps", 0) or 0)
+        self._is_file = bool(source)
         self._seq = 0
+        # The fps cap PACES a file, which reads instantly. It must NOT pace a camera: a camera
+        # already blocks in read() until its next frame, so sleeping first and then blocking
+        # again halves the rate -- a 30fps device gated at 30fps delivers about 15. For a
+        # camera we ask the DEVICE for the rate instead and let it do the pacing.
+        self._fps_cap = float(self.config.get("fps", 0) or 0) if source else 0.0
         self._label = str(source) if source else f"camera:{device}"
 
         target = str(source) if source else int(device)
@@ -58,9 +63,24 @@ class Capture(Plugin):
             if key in self.config:
                 self._cap.set(prop, float(self.config[key]))
 
+        if not self._is_file:
+            requested = float(self.config.get("fps", 0) or 0)
+            if requested:
+                self._cap.set(cv2.CAP_PROP_FPS, requested)
+            # Keep the driver's queue at one frame. Otherwise read() hands back whatever was
+            # buffered while a downstream stage was busy, so the overlay shows the past: the
+            # latency grows with the buffer and never recovers.
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
         w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.log.info("capturing %s at %dx%d", self._label, w, h)
+        device_fps = self._cap.get(cv2.CAP_PROP_FPS) or 0.0
+        self.log.info(
+            "capturing %s at %dx%d%s", self._label, w, h,
+            f", device reports {device_fps:.0f} fps" if device_fps else "",
+        )
+        self._t0 = time.monotonic()
+        self._reported = 0
 
     @every(0)
     def pump(self) -> None:
@@ -95,6 +115,13 @@ class Capture(Plugin):
                 frame = cv2.flip(frame, 1)
 
             self._seq += 1
+            if self._seq - self._reported >= 150:
+                elapsed = time.monotonic() - self._t0
+                if elapsed > 0:
+                    self.log.info("published %d frames, %.1f fps average",
+                                  self._seq, self._seq / elapsed)
+                self._reported = self._seq
+
             self.publish("frame", Frame(
                 seq=self._seq,
                 t_capture_ns=t_capture_ns,

@@ -681,7 +681,17 @@ Two corrections to how this table should be read, both from `plugins-and-config`
   content, and recorded in §9 as the first thing to add if the ceiling bites.
 - **Grayscale triples its own row.** Also recorded rather than fixed; see `payloads.md` §3.1.
 
-So: **the queue transport is adequate to roughly 640×480 with ≤3 frame subscribers.** Beyond that,
+**Measured again during implementation (2026-08-07), and this estimate was far too
+conservative.** A pickle round-trip of one frame costs 0.06 ms at 640×480, 0.56 ms at 1280×720
+and 1.16 ms at 1920×1080 — so even 1080p with two frame subscribers has headroom for several
+hundred fps, not thirty. The queue transport is not the constraint at any resolution a webcam
+produces, and T2's *performance* justification is therefore weaker than §5.3 claims. Decision
+#18's other reasons still stand (T2's preconditions are about correctness, not speed), but the
+bandwidth argument should not be cited as though it were urgent. What actually costs time in a
+live pipeline, measured on the same machine: MediaPipe CPU inference at 13.6 ms/frame, and
+per-draw work in a GUI plugin such as an unnecessary resize.
+
+The original estimate, retained for the record: **the queue transport is adequate to roughly 640×480 with ≤3 frame subscribers.** Beyond that,
 `frame` needs shared memory. This is a real ceiling and it is created by the full-isolation decision
 in `isolation.md` §2 (capture and pose in different processes), so it belongs on the record here.
 

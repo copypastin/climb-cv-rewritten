@@ -2,6 +2,7 @@
 
     python3 examples/02_live_webcam.py            # camera 0
     python3 examples/02_live_webcam.py 1          # camera 1
+    python3 examples/02_live_webcam.py --no-plot  # skip the 3D plot (the costliest window)
 
 What this shows: the default pipeline (capture → pose → smoothing) with a real camera, a
 third-party plugin consuming pose data, and `poll()` — the method to use when your own program
@@ -26,7 +27,11 @@ HERE = Path(__file__).resolve().parent
 
 
 def main() -> None:
-    device = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    device = int(args[0]) if args else 0
+    # matplotlib is the most expensive thing on screen. --no-plot isolates it, which is the
+    # first thing to try if the feed feels slow.
+    plot = "--no-plot" not in sys.argv[1:]
 
     app = ClimbCV({
         "framework": {
@@ -35,7 +40,14 @@ def main() -> None:
             "log_level": "INFO",
         },
         "plugins": {
-            "core.capture": {"device": device, "mirror": True, "fps": 30},
+            "core.capture": {
+                "device": device, "mirror": True,
+                # 640x480 deliberately. A webcam left at its native 1280x720 or 1920x1080
+                # costs real time in read(), in the mirror flip, and in every draw -- and
+                # the pose model downscales internally anyway, so the extra pixels buy
+                # nothing. Raise it if you want a prettier overlay, not for accuracy.
+                "width": 640, "height": 480,
+            },
             # "gpu" is opt-in: on some machines MediaPipe's GPU delegate initialises fine and
             # then aborts during inference, which no exception handler can catch. CPU is the
             # default because it works everywhere.
@@ -45,8 +57,10 @@ def main() -> None:
             "body_tilt": {"min_visibility": 0.5},
             # The two windows: overlay + live 3D. Both run in their own processes, so a slow
             # matplotlib redraw cannot stall the capture loop.
-            "exo_live": {"scale": 1.2, "draw_hz": 60},
-            "pose_plot": {"redraw_hz": 15, "limit_m": 1.0},
+            # draw_hz matches the source rather than exceeding it: drawing faster than
+            # frames arrive is a resize and a blit of the same image for nothing.
+            "exo_live": {"scale": 1.0, "draw_hz": 30},
+            "pose_plot": {"enabled": plot, "redraw_hz": 10, "limit_m": 1.0},
             # Only one publisher of pose.raw may run, and here it is the real model.
             "demo_pose": {"enabled": False},
         },

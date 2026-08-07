@@ -34,7 +34,7 @@ _TEXT = (240, 240, 240)
 class ExoLive(Plugin):
     def setup(self) -> None:
         self._window = str(self.config.get("window_name", "climb-cv — exo skeleton"))
-        self._scale = float(self.config.get("scale", 1.0))
+        self._scale = float(self.config.get("scale", 1.0))   # 1.0 = no resize per draw
         self._radius = int(self.config.get("point_radius", 3))
         self._thickness = int(self.config.get("line_width", 2))
         self._show_fps = bool(self.config.get("show_fps", True))
@@ -53,7 +53,7 @@ class ExoLive(Plugin):
             # continues without an overlay.
             self.unavailable(f"cannot open a window: {exc}")
 
-        self.set_interval(self.draw, 1.0 / float(self.config.get("draw_hz", 60)))
+        self.set_interval(self.draw, 1.0 / float(self.config.get("draw_hz", 30)))
         self.log.info("overlay window open — press ESC in it to stop the run")
 
     @subscribe("frame")

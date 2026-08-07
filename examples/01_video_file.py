@@ -82,8 +82,8 @@ def main() -> None:
         "core.smooth_oneeuro": {"min_cutoff": 1.0, "beta": 0.3},
         "brightness": {"dark_below": 60.0, "report_every_s": 5.0},
         "body_tilt": {"min_visibility": 0.4},
-        "exo_live": {"enabled": display, "scale": 1.4, "draw_hz": 60},
-        "pose_plot": {"enabled": display, "redraw_hz": 15, "limit_m": 1.0, "trail": 0},
+        "exo_live": {"enabled": display, "scale": 1.0, "draw_hz": 30},
+        "pose_plot": {"enabled": display, "redraw_hz": 10, "limit_m": 1.0, "trail": 0},
     }
 
     app = ClimbCV({
