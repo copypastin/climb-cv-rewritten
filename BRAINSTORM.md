@@ -145,8 +145,9 @@ Accepting these does **not** make the API lockable — that is a separate judgem
 | 21 | **Conflation is per-subscription** (`conflate = false`), making a correct recorder expressible by third parties and not only by first parties | **ACCEPTED 2026-08-07** |
 | 22 | **Deterministic authoring mistakes raise `PluginContractError`** — non-retryable, one message, no app-shutdown escalation. Plus a reserved-name set with a `cv_` prefix, which is what makes future base-class additions genuinely additive | **ACCEPTED 2026-08-07** |
 | 23 | **`requires_topology`/`provides_topology` mandatory** for any plugin touching a `PoseFrame` topic, keyed off payload type rather than a name prefix | **ACCEPTED 2026-08-07** — closes guardian B4 |
+| 24 | **One concurrently *running* `ClimbCV` per process**, guard scoped to running rather than construction and released on shutdown; a single instance is **not** re-runnable after `stop()` | **ACCEPTED 2026-08-07** — guardian-02's ruling. Scoping to *running* is what keeps the Jupyter loop (`stop()`, then a fresh instance) legal, and that is the environment `isolation.md` §2.4 verified. Full collision list and both refinements in the §4 block above |
 
-### Proposed Decision #24 (from guardian-02's ruling — awaiting confirmation)
+### Decision #24 — ACCEPTED 2026-08-07 (from guardian-02's ruling)
 
 **One concurrently *running* `ClimbCV` per process.** Guardian 02 ruled on the question `framework-core` left open, and sharpened it twice. The collisions are worse than file corruption: two instances each spawn `core.capture`, so two processes open camera 0; both write `logs/<plugin_id>.log`; both hand the same `state_dir/<plugin_id>/` to different children, so two `mac_lid` processes compile to the same path concurrently; both publish with `Meta.source == "<host>"`, so nothing downstream can attribute a host publish; and both install SIGINT/SIGTERM handlers, so Ctrl-C stops one of the two.
 
