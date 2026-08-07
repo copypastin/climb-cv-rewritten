@@ -1,6 +1,6 @@
 # climb-cv Plugin Architecture — Brainstorm Summary
 
-Status: **architecture locked (Decision #9, confirmed 2026-08-07); detailed design revised but incomplete — revision pass interrupted at commit `372673c`.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
+Status: **architecture locked (Decision #9); revision pass complete at `2a40560` except `plugin-api.md`, which is unfinished and self-contradictory. NOT lockable — second guardian pass required.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
 
 Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-cv) (Aaron's existing project).
 
@@ -23,21 +23,25 @@ Work stopped mid-revision when credit ran out. **Everything is committed; nothin
 
 ### What the interrupted revision pass did and did not do
 
-**Revised in place:** `broker.md`, `isolation.md`, `loader.md`, `payloads.md`, `plugin-api.md`. It was stopped partway through `plugin-api.md` §3.
+**Revision pass complete as of `2a40560`**, with one concentrated gap. `design/revision-01.md` is the per-finding audit trail: **48 addressed, 2 partial, 6 declined, 3 deferred, 1 not reached.** `config-contract.md` is finished (C-1..C-8 plus all four of `config.md` §13's asks, all accepted). New proposed Decisions #18–#23 are in §4 above.
 
-**Not done — these are the resumption tasks:**
+**The one remaining gap is `plugin-api.md`, and it is the highest-priority review target in the project:**
 
-1. **`config-contract.md` is untouched.** Consistent with this, findings **C-1, C-3, C-5, C-8** appear nowhere in the revised text. C-1 is the structural one: `plugins-and-config` showed the contract asks for a closest-match warning that is *impossible in a single pass* given the config→discovery load order, and proposes a second entry point `check_against_plugins(cfg, plugin_ids, topic_names)`. C-3 wants `FRAMEWORK_DEFAULTS` exported as an importable table so the key/type list isn't duplicated and drifted.
-2. **`design/revision-01.md` was never written.** This was to be the per-finding audit trail (addressed / declined + reason). **Its absence is the main open risk:** B1–B5, S6–S23 and F-1..F-16 are all *referenced* in the revised files, but nobody has verified each was actually resolved rather than merely mentioned. Reconstruct it by diffing `2b7e138..HEAD` per finding before treating any surface as locked.
-3. **No second guardian pass has run,** and the first pass's author never gave a lockability verdict — the question was asked but the run was interrupted before answering.
+- **§3.6–§3.11, §5 and §7 were never written**, though §2/§2.1 reference them. Almost every "not reached" caveat in `revision-01.md` points here rather than being spread across files — the gap is one file, not a scatter.
+- **§4.3 still documents `join=`** despite ruling #4 cutting it, and §6 still lists it as an open question. **The file authors read currently teaches a cut feature and contradicts itself.** This is the sharpest single item.
+- **§4.2 still says "a decrease in `seq` means publisher restarted"** without the `meta.source` keying (S12 partial) — corrected where it is *stated* (`payloads.md` §2.3, `broker.md` §5.4) but not where it is *taught*.
+- **S19 (the embedding API) is the largest outstanding design gap.** Only the verification half landed: `isolation.md` §2.4 records the empirically confirmed `spawn`-from-notebook result, and `broker.md` §6 reserves `WiringPlan.host: HostPlan | None` with §4.2 step 2 admitting `<host>` as a candidate publisher. The design section (`plugin-api.md` §7) does not exist, so `<host>` still has no manifest equivalent, no declared subscriptions, no `requires_topology`, and no place in the resolution rules — while being a public data-plane participant visible in the CLI output.
 
 ### Do these next, in order
 
-1. `git diff 2b7e138..HEAD -- design/` and build `design/revision-01.md` from it — one line per finding, outcome and location. This is cheap, and everything downstream depends on knowing what actually changed.
-2. Finish `config-contract.md` for C-1, C-3, C-5, C-8, plus the four asks in `config.md` §13 (`check_against_plugins()`, exported `FRAMEWORK_DEFAULTS`, `config_dir` on `LoadedConfig` and the `Plugin` base, `passthrough` on `core.smooth_oneeuro`).
-3. Re-run `plugin-api-guardian` on the revised surfaces — a second pass, since 5 blocking findings' fixes are themselves new API.
-4. **Only then** start `docs-and-testing`, which has deliberately never run. Writing an authoring guide against an unstable surface was the thing being avoided.
-5. Implementation stays gated behind §7 step 2's multi-agent review.
+1. **Finish `plugin-api.md`** — write §3.6–§3.11, §5, §7; delete `join=` from §4.3 and §6; apply the `meta.source` keying to §4.2. `revision-01.md` names what each unwritten section was to contain, and the intended shape of §7 is in the resumed agent's final summary.
+2. **Second `plugin-api-guardian` pass.** `framework-core`'s own verdict is **not lockable** — partly because `plugin-api.md` is self-contradictory, partly because the surface genuinely grew: the base class went from 7 members to 11, `[[subscribes]]` gained three keys, `[topics]` gained three. That is new author-facing surface deserving review on its own merits, not as deltas.
+3. **Then** `docs-and-testing`, which has deliberately never run.
+4. Implementation stays gated behind §7 step 2's multi-agent review.
+
+### A bug found in the design itself, worth not losing
+
+Neither review caught it; `framework-core` found it in its own work. The child loop's blocking read used `timeout=None` when a plugin has no timers, while the heartbeat is sent *from that loop* — so any no-timer plugin whose input pauses would be reported **stalled while perfectly healthy**. `pose_plot` as originally sketched is exactly that plugin. Fixed in the revision; recorded here because it is the kind of interaction that only shows up when someone traces a real plugin through the runtime.
 
 ### Two operational notes
 
@@ -108,6 +112,12 @@ Produced by `framework-core` on 2026-08-07; full reasoning in `design/`. **#12 a
 | 15 | `setup()` runs in the child after spawn; **`__init__` is reserved** so no author ever pickles a model | proposed |
 | 16 | Restart: exponential backoff 0.5→30 s; quarantine after 5 crashes/60 s; 2 attempts for pre-READY setup failures; hangs warned about but never killed | proposed |
 | 17 | **Raise the Python floor to 3.11** (stdlib `tomllib`, avoiding a permanent `tomli` dependency imposed on every author) | **ACCEPTED 2026-08-07** — §3 assumption updated from 3.10+ to 3.11+ |
+| 18 | **T1 (queue transport) for v1, with stated T2 preconditions.** The original justification — "T2 is free because `transport` is invisible to authors" — is **withdrawn as wrong**: it is non-breaking at the API level and data corruption at the authoring level (F-11). T2 must not ship without (a) read-only payload arrays and (b) the arrays-stay-valid-for-the-payload's-lifetime guarantee, both now in v1. Measured: T2's win is bandwidth, not zero-copy (memcpy 5.6 µs vs pickle 10.5 µs at 320×240), so copy-out T2 keeps nearly all of it | proposed |
+| 19 | **Payload arrays are immutable and remain valid for the payload's lifetime.** Enforced via `_ARRAY_FIELDS` + `__post_init__` + **`__setstate__`**, arrays normalised to owned C-contiguous buffers | proposed — supersedes guardian B3, whose mechanism was **measured insufficient**: `__post_init__` is bypassed on unpickle and numpy does not preserve `writeable=False` across a pickle round-trip, so B3 as written froze arrays in the publisher and left them writeable in every subscriber — exactly where both of B3's own failure cases live |
+| 20 | **Two plugin roots, user `plugins/` shadowing bundled** (F-3). Duplicate id fatal within a root, shadow across roots with an INFO line. Absorbs S20: built-ins become ordinary directories with real manifests, so the manifest parser is dogfooded rather than bypassed | proposed |
+| 21 | **Conflation is per-subscription** (`conflate = false`), making a correct recorder expressible by third parties and not only by first parties | proposed |
+| 22 | **Deterministic authoring mistakes raise `PluginContractError`** — non-retryable, one message, no app-shutdown escalation. Plus a reserved-name set with a `cv_` prefix, which is what makes future base-class additions genuinely additive | proposed |
+| 23 | **`requires_topology`/`provides_topology` mandatory** for any plugin touching a `PoseFrame` topic, keyed off payload type rather than a name prefix | proposed — closes guardian B4 |
 
 ### Review outcomes accepted 2026-08-07 (inputs to the revision pass)
 
