@@ -110,6 +110,7 @@ class TopicDescriptor:
     schema: str                    # "pose.smoothed/1"  -> diagnostic id for the payload contract
     payload: type                  # climbcv.contracts.PoseFrame
     unit: str | None               # required iff payload is Scalar -- see payloads.md §3.4
+    record_kind: str | None        # required iff payload is Record -- see payloads.md §3.6
     standard: bool                 # True for the shipped interop vocabulary (§2.1)
     declared_by: str               # "core" | plugin id  -> for conflict error messages
     doc: str                       # one line, shown by `climbcv topics`
@@ -117,6 +118,15 @@ class TopicDescriptor:
 
 `unit` is added per guardian S13 and joins the merge-equality check in §4.2. `standard` is added so
 §4.4's config overrides can refuse to redefine a shipped topic without a name-prefix test.
+
+`record_kind` is added per guardian-02 blocker 2, and it is the same fix as `unit` one level down.
+`schema` is `record/1` for **every** record topic in the ecosystem, so without it two plugins
+declaring `acme.hand_state` with incompatible `data` layouts agree on every checked field, wire
+successfully, and fail in the subscriber's handler — where §6.2's ladder logs "handler `on_hand` has
+raised 148 times" and blames the innocent plugin. It joins the merge-equality check in §4.2, at which
+point §4.3's descriptor-contradiction error produces the message for free. Making this key required
+later would be a tightening, which `payloads.md` §5's table calls breaking, so v1 is the only
+opportunity — exactly as it was for `requires_topology` (B4).
 
 Two important consequences of putting descriptors on the same footing regardless of origin:
 
@@ -241,7 +251,7 @@ see `docs-and-testing` handoff in §8.
 For each topic that any enabled plugin publishes or subscribes to:
 
 1. **Merge descriptors.** All declarations of the same topic name must agree on `kind`,
-   `exclusivity`, `schema`, and `unit`. A standard-set topic's descriptor always wins and a plugin
+   `exclusivity`, `schema`, `unit`, and `record_kind`. A standard-set topic's descriptor always wins and a plugin
    re-declaring it differently is an error (§4.3, case *contradiction*). For a non-standard topic,
    `config["topics"][name]` may supply `kind` / `exclusivity` as a tie-break — §4.4.
 2. **Gather candidate publishers** = every enabled plugin (built-in or third-party) declaring
@@ -898,8 +908,26 @@ app.shutdown       event   shared exo_live, <host>          <host>
 2 warnings — run `climbcv topics -v` for detail.
 ```
 
-`climbcv topics -v` additionally prints, per plugin: which root it was loaded from (`user` /
-`bundled`, `loader.md` §2.1), its resolved `stream_depth` (§5.1.2), its resolved `teardown_timeout_s`
+`climbcv topics -v` additionally prints, **per topic, the three fields that actually constitute the
+contract** — `payload` type, `schema`, and whichever of `unit` / `record_kind` applies:
+
+```
+$ climbcv topics -v
+topic              payload     schema              unit / record_kind
+frame              Frame       frame/1             —
+pose.smoothed      PoseFrame   pose.smoothed/1     — (topology mediapipe.pose.33)
+holds.boxes        HoldBoxes   holds.boxes/1       —
+device.lid_angle   Scalar      scalar/1            unit: degree
+acme.hand_state    Record      record/1            record_kind: acme.hand_state/1
+```
+
+Guardian-02 noted the earlier version printed depth, timeouts, `data_dir` and topologies but never
+these — so the one command that exists to answer "who is producing this and what is it" could not
+answer the second half. `schema` alone is insufficient for record topics, which is exactly blocker 2:
+every `Record` topic in the ecosystem shows `record/1`.
+
+Per plugin, `-v` additionally prints: which root it was loaded from (`user` / `bundled`,
+`loader.md` §2.1), its resolved `stream_depth` (§5.1.2), its resolved `teardown_timeout_s`
 and `heartbeat_warn_s`, its `data_dir`, its declared topologies, and live drop counters per
 (topic, subscriber). Everything that resolution computed implicitly is inspectable, which is the whole
 justification for this command existing.

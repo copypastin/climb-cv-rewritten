@@ -193,6 +193,17 @@ payload     = "scalar"                       # required; names a climbcv.contrac
 unit        = "newton"                       # required when payload = "scalar" -- guardian S13
 doc         = "Estimated grip force per hand."            # required
 
+# An author-defined payload must name AND version its own shape -- guardian-02 blocker 2.
+# schema is "record/1" for every record topic, so it cannot distinguish two incompatible
+# layouts; record_kind is what the merge-equality check in broker.md §4.2 compares.
+[[publishes]]
+topic       = "acme.hand_state"
+kind        = "stream"
+exclusivity = "shared"
+payload     = "record"
+record_kind = "acme.hand_state/1"            # required when payload = "record"
+doc         = "Per-hand open/closed state and confidence."
+
 # Optional, informational, never rejects anything (C-6, ACCEPTED):
 [config]
 keys = ["every_n_frames", "input_width", "imgsz", "min_score", "model_path"]
@@ -211,6 +222,7 @@ keys = ["every_n_frames", "input_width", "imgsz", "min_score", "model_path"]
 | `provides_topology` / `requires_topology` | See `payloads.md` §4–§4.0. **Mandatory** for any plugin publishing/subscribing a topic whose payload is `PoseFrame`; `requires_topology = "any"` is the explicit opt-out. Unknown id → fatal, listing known ids. |
 | `teardown_timeout_s` | Optional float, default `1.0`, hard cap `30.0`. Guardian S8 — see `isolation.md` §7.1. Above 1.0 gets one INFO line at startup, so a long shutdown pause is explained rather than looking like a hang. |
 | `heartbeat_warn_s` | Optional float, default `5.0`, hard cap `120.0`. For a plugin whose handler legitimately blocks for a long time (an IP camera read). Guardian S18 and the stall-warning note. |
+| `record_kind` (in `[[publishes]]`) | **Required when `payload = "record"`**, forbidden otherwise. A versioned id the publishing plugin owns, `"<name>/<major>"`. Guardian-02 blocker 2: `schema` is `record/1` for every record topic, so it cannot distinguish two incompatible `data` layouts; this is what `broker.md` §4.2 compares and what `publish()` checks. Absent → manifest error naming the topic and showing the expected form. Same rule and same reasoning as `unit` for `Scalar` (guardian S13), one level down. |
 | `[[publishes]]` / `[[subscribes]]` | Zero or more each. A plugin with neither is legal but useless — one WARNING. Sub-keys in §3.1.1. |
 | `[config] keys` | Optional list of strings. **Purely informational** — see §3.1.2. |
 

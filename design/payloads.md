@@ -625,8 +625,38 @@ class Record:
     data: dict
 ```
 
-Manifest: `payload = "record"`. `unit` does not apply (a `Record` may carry many quantities; units
-belong in its author's documentation, keyed by `kind`).
+Manifest: `payload = "record"` **and `record_kind = "<name>/<major>"`, required** (`loader.md` §3.1).
+`unit` does not apply (a `Record` may carry many quantities; units belong in its author's
+documentation, keyed by `kind`).
+
+**`kind` is declared and checked, not merely carried (guardian-02 blocker 2).** Three places, and all
+three are needed:
+
+1. **Manifest** — `record_kind` is required whenever `payload = "record"`, so the value exists before
+   any process starts.
+2. **Wiring time** — `record_kind` is a `TopicDescriptor` field and joins §4.2's merge-equality check
+   alongside `kind`/`exclusivity`/`schema`/`unit`, so two plugins declaring the same record topic with
+   different versions are a startup error. `broker.md` §4.3's descriptor-contradiction message then
+   covers it with no new error text.
+3. **`publish()`** — asserts `payload.kind == descriptor.record_kind` next to the `isinstance` check
+   already added for B5, in the publisher's process, where the bug is.
+
+Without this, `schema` is `record/1` for **every** record topic in the ecosystem, so it cannot
+distinguish two incompatible `data` layouts. The concrete failure: `grip_viz` subscribes
+`acme.hand_state` written against `/1`, where `data["fingers"]` is five floats; a second plugin
+publishes the same topic at `/2`, where `fingers` became a dict. Every checked field agrees, the topic
+wires, and the subscriber raises `KeyError` inside its handler — where `isolation.md` §6.2's ladder
+logs "handler `on_hand` has raised 148 times" and attributes the bug to the innocent plugin. That is
+precisely the outcome B5's `isinstance` check was added to eliminate, reachable through the type B5
+added. It also bites within one plugin across versions: bump `kind` to `/2` and every existing
+subscriber breaks silently, with no mechanism that could have warned them.
+
+This is guardian S13's fix for `Scalar`'s `unit` applied one level down, and for the same reason S13
+gave — `Record` will carry most third-party topics, so it is the highest-traffic corner of the payload
+surface. v1 is the only opportunity: making a manifest key required later is a tightening, which §5's
+own table calls **breaking**, and §4.0 already recorded what happens when the safe direction is
+deferred — "the unsafe default would have persisted and the mechanism would have protected only
+careful authors, who were never the risk."
 
 **Why this exists (guardian B5).** `loader.md` §3 advertises author-invented topics, but `payload`
 was constrained to a `climbcv.contracts` type, so the six framework types were **the entire expressible
