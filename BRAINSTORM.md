@@ -1,6 +1,6 @@
 # climb-cv Plugin Architecture — Brainstorm Summary
 
-Status: **architecture locked (Decision #9); all 8 design sections complete and internally consistent at `f4a1663`; Decisions #11–#23 accepted. NOT yet locked — one guardian pass outstanding, then implementation's own review gate.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
+Status: **architecture locked (Decision #9); all 8 design sections written; Decisions #11–#23 accepted. Guardian pass 02 done (`cf8a5eb`): NOT lockable — 2 blocking findings, both mechanical, ~a day's work. No third review needed; fix those two and proceed.** This document is the handoff artifact for continuing that work across agents/sessions. **See §0 SESSION HANDOFF below for exactly where to resume.**
 
 Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-cv) (Aaron's existing project).
 
@@ -24,6 +24,7 @@ Source repo studied: [copypastin/climb-cv](https://github.com/copypastin/climb-c
 | `f1e2f2a` | Decisions #18–#23 recorded here |
 | `2f079cc` | **Decisions #11–#23 all accepted** |
 | `f4a1663` | **`plugin-api.md` finished** — `join=` removed, S12 closed, §7 embedding API designed |
+| `cf8a5eb` | **`design/reviews/guardian-02.md`** — 2 blocking, 9 should-fix, 4 notes; lockability verdict |
 
 ### Design phase: all eight sections complete
 
@@ -35,11 +36,24 @@ Decisions **#11–#23 are all ACCEPTED** (§4), with the two qualifications note
 
 ### Do these next, in order
 
-1. **Second `plugin-api-guardian` pass** — the remaining gate before the API can be called locked. `framework-core` considers the surfaces ready and named two things a reviewer is better placed to judge than the author:
-   - **The base class grew from 7 members to 11**, `[[subscribes]]` gained three keys, `[topics]` gained three. Every addition has a finding and a first-party need behind it and §2's table says which — but "each addition was justified individually" is precisely how a surface creeps, and whether the *total* is still one uniform authoring model is not a judgement its author can make.
-   - **`plugin-api.md` §7 (the embedding API) is new and largely underived.** The host has no manifest, so most of §7 was invented rather than derived; §7.7 tables what was decided versus derived. It is the section most likely to hold a choice that reads fine alone and wrong against the rest of the system.
-2. **Then `docs-and-testing`**, which has deliberately never run.
-3. Implementation stays gated behind §7 step 2's multi-agent review.
+**Two blocking fixes — this is the whole remaining gate.** Guardian 02 was explicit that no third full review is warranted: verify these two and proceed.
+
+1. **`payloads.md` §2.2.1 — correct the immutability mechanism.** Define `__setstate__` in each dataclass's own body (or assign `cls.__setstate__` from a decorator applied *outside* `@dataclass`); test ownership with `arr.flags["OWNDATA"]` not `arr.base is not None`, copying via `np.array(arr, copy=True, order="C")`; give `Record` a `__setstate__` that re-walks `data`, or drop its recursive read-only claim. **Acceptance criterion: a test asserting the read-only flag survives `pickle.loads(pickle.dumps(x))` for every contract type.** That test is what would have caught this and what catches the next `_ARRAY_FIELDS` omission.
+2. **`Record` must declare and check its `kind`** — required `[[publishes]]` key when `payload = "record"`, a `TopicDescriptor` field, joined to §4.2's merge-equality check, and checked in `publish()` alongside the existing `isinstance`. v1 is the only opportunity: making a manifest key required later is a tightening, which §5's own table calls breaking.
+
+**Then, before implementation:**
+
+3. **Re-run `plugins-and-config` against the revised surfaces** (guardian-02 finding 15). `first-party-plugins.md` was never revised, so the dogfood proof now contradicts the API it was meant to validate — it still shows `as_bgr().copy()`, `finish()` for the unavailable paths, `<plugin_dir>/build/`, `np.clip` on boxes, and no `[config] keys`/`conflate`/`mode`/`unit` in any manifest. Decision #7's claim is only as good as the last time it was actually run.
+4. **Worth an hour on `plugin-api.md` §7 while it has no installed base** — findings 6, 7, 8: compute "unknown topic" against the *discovered* rather than enabled vocabulary; make host `required` a mandatory keyword rather than defaulting to the one direction §5 forbids reversing; let `config=` accept a dict so `ClimbCV.publish()` is usable without telling an end user to hand-author TOML.
+5. **Three should-fixes that will each cost someone a bad afternoon** — findings 3 (`provides_topology` cannot express "same as my input", so a third-party pose plugin kills the app via the first-party smoother), 4 (`self.stopping` cannot change while the blocking handler it exists for is running), 5 (§7.4's callback thread is unstated and contradicts today's `start(blocking=True)` behaviour).
+6. **Then `docs-and-testing`**, which has deliberately never run.
+7. Implementation stays gated behind §7 step 2's multi-agent review.
+
+### Guardian 02's answers to the questions it was asked
+
+- **Still one uniform authoring model? YES.** "The count grew; the shape did not." What would make it a toolkit is a *second way to be a plugin* — a second base class, lifecycle, mode flag, or a hook only some types implement — and none of the six additions is any of those. It would cut nothing. The honest cost is discoverability, not conceptual load: five of eleven members serve narrow plugin classes and §2 doesn't say which five, which is `docs-and-testing`'s problem.
+- **Verified rather than trusted:** B1, B2, B4, B5 genuinely landed. B3/#19 claimed and false (finding 1).
+- **All six declines upheld**, and both structural deferrals properly argued. Only S9 gets a partial overturn — take the cheap half (finding 12).
 
 ### One open question §7 raised and deliberately did not answer
 
@@ -112,7 +126,7 @@ Produced by `framework-core` on 2026-08-07; full reasoning in `design/`. **All o
 Two qualifications on what "accepted" means here:
 
 - **#15 is accepted in its corrected form only.** Its mechanism stands (`setup()` in the child, `__init__` reserved); its original justification is rejected as factually wrong — no plugin instance is ever pickled, because the child constructs it. The operative reason is that `config`/`log`/`publish`/`latest` are bound *after* construction. The error text must say the true thing, since the original taught authors a false model of what crosses a process boundary.
-- **#19 supersedes guardian B3's mechanism, not its intent.** B3 as written was measured insufficient — `__post_init__` is bypassed on unpickle and numpy does not preserve `writeable=False` across a pickle round-trip, so it would have frozen arrays in the publisher while leaving them writeable in every subscriber. `__setstate__` is what makes the guarantee real, and #18's T2 preconditions depend on it holding.
+- **#19's intent stands; its mechanism has now failed the same test twice.** #19 correctly found that guardian B3 was insufficient (`__post_init__` is bypassed on unpickle; numpy does not preserve `writeable=False` across a pickle round-trip). Guardian 02 then verified by execution that **#19's own replacement also fails** — `__setstate__` on a mixin base is shadowed by the one `@dataclass(slots=True)` installs, because CPython's `_add_slots` guards on `'__setstate__' not in cls_dict` and an inherited method is not in `cls_dict`. Two further holes: `base is not None` is the wrong ownership test (`np.ascontiguousarray` returns the same object for a contiguous view, so the copy never fires), and `Record.data`'s nested arrays are unreachable from `_ARRAY_FIELDS`. **The guarantee is right and stays; the mechanism must be corrected before implementation** — see guardian-02 finding 1, which names verified fixes for all three. #18's T2 preconditions rest on this holding.
 
 Accepting these does **not** make the API lockable — that is a separate judgement, still pending the second guardian pass. See §0.
 
@@ -131,6 +145,13 @@ Accepting these does **not** make the API lockable — that is a separate judgem
 | 21 | **Conflation is per-subscription** (`conflate = false`), making a correct recorder expressible by third parties and not only by first parties | **ACCEPTED 2026-08-07** |
 | 22 | **Deterministic authoring mistakes raise `PluginContractError`** — non-retryable, one message, no app-shutdown escalation. Plus a reserved-name set with a `cv_` prefix, which is what makes future base-class additions genuinely additive | **ACCEPTED 2026-08-07** |
 | 23 | **`requires_topology`/`provides_topology` mandatory** for any plugin touching a `PoseFrame` topic, keyed off payload type rather than a name prefix | **ACCEPTED 2026-08-07** — closes guardian B4 |
+
+### Proposed Decision #24 (from guardian-02's ruling — awaiting confirmation)
+
+**One concurrently *running* `ClimbCV` per process.** Guardian 02 ruled on the question `framework-core` left open, and sharpened it twice. The collisions are worse than file corruption: two instances each spawn `core.capture`, so two processes open camera 0; both write `logs/<plugin_id>.log`; both hand the same `state_dir/<plugin_id>/` to different children, so two `mac_lid` processes compile to the same path concurrently; both publish with `Meta.source == "<host>"`, so nothing downstream can attribute a host publish; and both install SIGINT/SIGTERM handlers, so Ctrl-C stops one of the two.
+
+- **Scope the guard to *running*, not construction**, released when shutdown completes — a flat "one per process" would forbid `stop()` then a fresh `ClimbCV(...).run()`, which is exactly the loop a Jupyter user runs twenty times an afternoon, and the notebook case is the one `isolation.md` §2.4 went to the trouble of verifying. Check at `run()`/`start()`; the current code already has the per-instance precedent (`RuntimeError("climbcv is already running")`).
+- **Answer the adjacent question too:** a single instance is **not** re-runnable after `stop()` — declarations freeze at `run()`, queues are consumed, children are dead. Raise "this ClimbCV has already run; construct a new one", or a notebook user's second cell gets a half-working run that reports nothing.
 
 ### Review outcomes accepted 2026-08-07 (inputs to the revision pass)
 
