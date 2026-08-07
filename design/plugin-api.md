@@ -847,3 +847,215 @@ plugin guide.
 - Nothing in this file is open. The naming questions are ruled on and `join=` is cut.
 - Cross-file items still open are listed in `broker.md` §8 (T2's preconditions, subscription decimation,
   the `retain` kind) and `loader.md` §8 (dependency installation, the archive format).
+
+---
+
+## 7. The embedding API — `<host>` as a participant
+
+`ClimbCV` is the second public surface in this project and it had no design section. `broker.md` §1.1
+shows `ClimbCV.subscribe(...)` in the architecture diagram and §7 lists `<host>` as a subscriber of
+`pose.smoothed` and as both publisher and subscriber of `app.shutdown` — while nothing specified what any
+of that means. Guardian S19 is blunt about the consequence: the host was **the one participant exempt
+from every rule the plugin API enforces**, and most consequentially it had no manifest, so it could not
+declare `requires_topology` — which voided the highest-value check in the whole design for every
+embedder.
+
+This is not speculative. `start(blocking=False)` with an `on_landmarks` callback is an **existing
+documented capability** of the current code (`BRAINSTORM.md` §2), so every embedder that exists today
+lands here.
+
+### 7.1 The surface
+
+```python
+from climbcv import ClimbCV
+
+app = ClimbCV(config="climbcv.toml")          # or config=None for defaults
+
+# --- declarations: all of these MUST happen before run()/start() ---
+app.subscribe("pose.smoothed", self.on_pose, requires_topology=["mediapipe.pose.33"])
+app.subscribe("holds.boxes",   self.on_holds)          # shared topic: callback gets (payload, meta)
+app.publishes("frame", provides_topology=None)         # optional; see §7.5
+
+# --- lifecycle ---
+app.run()                                     # blocking; returns when the run ends
+app.start()                                   # non-blocking; spawns a supervisor thread
+app.stop(reason="user closed the window")     # orderly shutdown
+app.status()                                  # -> Mapping[str, Status]; a snapshot, no subscription needed
+```
+
+Callback signature is **`(payload, meta)`** — the plugin handler signature minus `self`, deliberately, so
+that a host callback and a plugin handler are the same function body and moving code between them is a
+copy-paste. `meta` is not optional for the same reason it is not optional in §3.3: inspecting the
+signature to decide breaks under `functools.wraps`, decorators, and bound methods, and fails with an
+arity error instead of a clear one.
+
+**Declarations are frozen at `run()`.** Subscribing afterwards raises. Wiring happens once at startup
+(`broker.md` §1) and there is no hot reload (Assumption §3), so a late subscription could only be
+silently ignored or trigger a rewire — and the first is the failure mode this project keeps refusing to
+ship.
+
+### 7.2 `<host>` in the resolution rules
+
+`<host>` is a **reserved id** (`loader.md` §3.1) — it cannot be spelled by any plugin, because the id
+grammar forbids `<`. It participates in `broker.md` §4.2 as an ordinary node with three differences, each
+of which has a reason rather than being an exemption:
+
+| | Plugins | `<host>` | Why the difference |
+|---|---|---|---|
+| declarations come from | `climbcv-plugin.toml` | `subscribe()` / `publishes()` calls | There is no manifest and inventing a file for the embedding application would be absurd. The calls **are** the manifest; `HostPlan` (`broker.md` §6) is the parsed form. |
+| `api_version` | declared, checked | **not checked** | The host imported `climbcv` to get `ClimbCV`, so it is compiled against exactly this build by construction. There is no skew to detect. This is the one genuinely free exemption. |
+| `enabled = false` | available | **not available** | You cannot disable the application from its own config. Contention involving `<host>` is resolved by changing the code or disabling the *other* candidate (§7.5). |
+
+Everything else applies unchanged: `<host>` appears in `climbcv topics` output (it already did), its
+subscriptions get queues and drop counters like any other, its callbacks are subject to the §6.2 error
+ladder attributed to `<host>` (`isolation.md` §6.2 already said so), and `Meta.source == "<host>"` on
+anything it publishes.
+
+### 7.3 `requires_topology` — the answer to S19's sharpest point
+
+```python
+app.subscribe("pose.smoothed", self.on_pose, requires_topology=["mediapipe.pose.33"])
+app.subscribe("pose.smoothed", self.on_pose, requires_topology="any")
+```
+
+**Mandatory on exactly the same terms as a plugin's** (`payloads.md` §4.0): if the topic's descriptor
+payload is `PoseFrame`, the keyword is required, with `"any"` as the explicit opt-out. Omitting it raises
+at `subscribe()` — at the call site, in the embedder's own traceback, which is the best possible place:
+
+```
+ClimbCV.subscribe("pose.smoothed", ...) needs requires_topology.
+
+'pose.smoothed' carries pose landmarks, and landmark INDICES mean different joints under
+different topologies -- index 11 is a left shoulder under mediapipe.pose.33 and a left hip
+under coco.17. Your callback will be reading those indices.
+
+Pass ONE of:
+    requires_topology=["mediapipe.pose.33"]   # I index joints by number
+    requires_topology="any"                   # I treat landmarks as opaque points
+```
+
+Without this, S19's failure was total and silent: an embedder writes a callback indexing joint 11, a user
+swaps in a `coco.17` pose plugin, and **every index in every embedder's callback silently changes meaning**
+— the exact scenario `payloads.md` §4's error message exists to prevent, never printed, for the one
+participant with no manifest to omit the field from. Raising at the call site is strictly better than a
+plugin's manifest error, because there is no file to go and edit.
+
+### 7.4 Host callbacks run in the host, and never cross a process boundary
+
+Callbacks are invoked on the supervisor's dispatch thread in the host process. They are **not** pickled,
+not sent to a child, and not run in a plugin's process. Three consequences:
+
+- **A host callback may touch host state freely** — that is the point of embedding. It is the one place in
+  this design where shared mutable state is normal, because there is only one process.
+- **A slow callback applies backpressure to nothing.** Its queue fills and drops, like any subscriber
+  (`broker.md` §5.4). It cannot slow the camera loop.
+- **A raising callback is logged, not fatal**, on `isolation.md` §6.2's ladder attributed to `<host>`.
+  This is a deliberate improvement on today's behaviour: `on_landmarks` is currently wrapped in
+  `try: ... except Exception: pass`, so a bug in the host application's own callback is invisible.
+
+A callback must not call back into `ClimbCV` reentrantly, with one exception: **`stop()` is always safe**,
+because it only sets the shutdown Event. Calling `subscribe()` raises (§7.1); calling `run()` raises.
+
+This is also why the notebook case works. `isolation.md` §2.4 verified `spawn` from a `__main__` with no
+`__file__` — the notebook condition — and the reason it works is that everything crossing the boundary is
+package-level (`child_main`, `PluginPlan`, `TopicDescriptor`, queues, an `Event`), while **host callbacks,
+which are the one thing a notebook user would define in a cell, never cross at all.** A Jupyter embedder
+is therefore supported, and `app.start()` is the form they want.
+
+### 7.5 `ClimbCV.publish()` — yes, and it enters contention like anything else
+
+```python
+app.publishes("frame")                        # declare first
+app.publish("frame", Frame(...))              # then publish
+app.publish("app.shutdown", Shutdown("..."))  # equivalent to app.stop(...)
+```
+
+Provided rather than withheld, for one reason that outweighs its speculativeness: **host-as-frame-source
+is a real use** — an application that already has a capture pipeline and wants climb-cv to analyse *its*
+frames rather than opening a second camera. Under Decision #9 the only way to express that is to publish
+`frame`, and without `publish()` the answer would be "write a plugin that talks to your own application",
+which is a worse design than the thing it avoids.
+
+Same rules as a plugin's `publish()`: declared or it raises `UndeclaredTopicError`; the payload is
+`isinstance`-checked against the descriptor (§3.4); `provides_topology` is required if the payload is
+`PoseFrame`; and `<host>` is an ordinary candidate publisher in `broker.md` §4.2 step 2 — so declaring
+`frame` while a capture plugin is enabled produces the normal exclusive-contention fatal, with one extra
+line because the usual fix does not apply:
+
+```
+climb-cv cannot start: 2 publishers both want the exclusive topic 'frame'.
+
+  <host>          the embedding application (ClimbCV.publishes("frame"))
+  core.capture    (bundled)                 Webcam capture via OpenCV
+
+'<host>' cannot be disabled from config -- it is the application itself. Either remove
+the ClimbCV.publishes("frame") call, or disable the other publisher:
+
+    [plugins."core.capture"]
+    enabled = false
+```
+
+### 7.6 `required` — the one place the default is deliberately inverted
+
+**A host subscription defaults to `required=False`.** A plugin's defaults to `True`.
+
+```python
+app.subscribe("holds.boxes", cb)                  # optional: absent topic -> callback never fires
+app.subscribe("pose.smoothed", cb, required=True) # critical: absent topic -> startup fatal
+```
+
+This answers the two questions S19 asks directly:
+
+- **Does a host subscription count for wiring validation (`broker.md` §4.2 step 5)?** Only if
+  `required=True`. By default, subscribing to an absent topic is fine: the callback never fires, and one
+  INFO line says so at startup (`<host> subscribes to 'device.lid_angle', which nothing publishes here;
+  the callback will not be called`).
+- **Does it count for the critical-quarantine shutdown escalation (`isolation.md` §5.3)?** Same answer —
+  only if `required=True`. So when `core.pose_mediapipe` quarantines and the only pose consumer is an
+  embedder's callback, **the app exits if and only if the embedder asked for that.**
+
+**Why inverted, when `broker.md` §4.2 argues so strongly for default-true.** The two defaults are solving
+different problems and it took writing this section to see it. `required=True` for plugins exists to catch
+**typos in a file nobody validates** — "a mistyped topic name that silently delivers nothing forever is
+one of the worst authoring experiences pub/sub has." That reasoning does not transfer: a host writes a
+string literal in code it is actively running, and it will notice a callback that never fires far sooner
+than a plugin author notices a manifest line. Meanwhile the *cost* of default-true is much higher here —
+an embedder adding an optional telemetry callback would be silently granting it the power to kill the
+whole pipeline, and `shutdown_on_critical_quarantine` is a framework-wide knob, not a per-subscription
+one.
+
+**But the typo problem is real, so it is solved separately rather than ignored.** Splitting the two jobs
+`required` was doing:
+
+> **A host subscription to a topic name that is not in the standard set and that no enabled plugin
+> publishes or subscribes to is ALWAYS a fatal `UnknownTopicError` at `run()`**, regardless of `required`,
+> with `broker.md` §4.3's did-you-mean message.
+
+So `app.subscribe("pose.smooth", cb)` fails loudly — that is a typo, and typos are always errors — while
+`app.subscribe("device.lid_angle", cb)` on Linux is fine, because that topic genuinely exists in the
+vocabulary and is merely absent on this machine. The distinction is *"is this a name that means
+something"*, not *"is something publishing it right now"*, and it is the distinction default-true was
+conflating.
+
+### 7.7 What §7 decided rather than derived
+
+Recorded explicitly, because a reviewer should know which parts are inferred from existing decisions and
+which are choices this section made with nothing to derive from. The host has no manifest, so most of this
+could not be mapped from the plugin rules.
+
+| Decision | Alternative rejected |
+|---|---|
+| **`required` defaults to `False`**, inverted from plugins (§7.6) | Default-true for symmetry. Rejected: it silently gives an optional telemetry callback the power to end the run, and the typo problem it exists to solve is much weaker in code than in an unvalidated file. Split out as the always-fatal unknown-topic rule instead. |
+| **`ClimbCV.publish()` exists** (§7.5) | Omit it in v1 as speculative — `stop()` already covers the shutdown case. Rejected because host-as-frame-source is a real embedding shape and Decision #9 leaves no other way to express it; and because "the host is exempt from every rule" is answered better by making it a participant than by keeping it a spectator. Genuinely close; a reviewer may reasonably disagree. |
+| **`api_version` is not checked for `<host>`** (§7.2) | Check it. Rejected as meaningless: the host imported this build to get the class. |
+| **Declarations frozen at `run()`** (§7.1) | Allow late `subscribe()`. Rejected: wiring is static, so it could only be ignored or trigger a rewire. Relaxing later is additive. |
+| **`requires_topology` raises at the `subscribe()` call**, not at `run()` (§7.3) | Collect and report at `run()` with the other wiring errors. Rejected: the call site is in the embedder's own traceback and names the exact line, which no manifest error can do. |
+| **Callback signature is `(payload, meta)`** (§7.1) | `(payload)` only, since most embedders ignore `meta`. Rejected for §3.3's reasons plus one more: it makes a host callback and a plugin handler the same body, so `on_landmarks` code moves into a plugin unchanged when an embedder outgrows the callback. |
+| **`app.status()` as a snapshot method** (§7.1) | Require subscribing to `app.status`. Rejected: a host asking "is anything quarantined" should not have to become a data-plane subscriber to find out, and the framework already holds that state. |
+
+**One thing §7 does *not* resolve, and should be reviewed as an open question:** whether an embedder can
+run **two** `ClimbCV` instances in one process. Nothing in this design forbids it, and nothing supports it
+— `logs/<plugin_id>.log`, `state_dir/<plugin_id>/`, and the process-title convention would all collide,
+and `parent_process()`-based guard detection (`isolation.md` §2.4) does not distinguish them. The honest
+v1 answer is **one instance per process**, enforced with a clear error rather than left to be discovered
+as file corruption. Flagged rather than specified, because it may deserve to be a Decision Log entry.
