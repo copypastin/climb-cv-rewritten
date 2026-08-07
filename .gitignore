@@ -21,3 +21,6 @@ dist/
 # Example run artifacts
 examples/.state/
 examples/sample.mp4
+
+# Machine-local permission allowlist; churns per session
+.claude/settings.local.json
