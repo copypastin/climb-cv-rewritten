@@ -41,7 +41,7 @@ Work stopped mid-revision when credit ran out. **Everything is committed; nothin
 
 ### Two operational notes
 
-- **`.claude/agents/` is loaded at session start.** The four agents were created mid-session, so they were never invocable by name — every run so far used `general-purpose` with the agent file's contents inlined verbatim, which is functionally equivalent. **In a fresh session they work directly by name.** Prefer that.
+- **`.claude/agents/` is loaded at session start.** The four agents were created mid-session, so the early runs (framework-core's step-6 design, guardian review 01, plugins-and-config's design, and the interrupted revision pass) all used `general-purpose` with the agent file's contents inlined verbatim — functionally equivalent, and the reason those runs appear under a generic name. **They registered as of 2026-08-07 03:4x and are now invocable directly by name.** Prefer that; also prefer resuming an existing agent over spawning a fresh one, since a resume keeps its context instead of re-reading the whole `design/` tree.
 - **`~/Desktop/2/`** holds stale copies of this file and `.claude/agents/`, stranded there by a permission-prompt glitch that renamed a path instead of running a command. Everything in it is superseded by this repo. Safe to delete; left in place because it is not mine to remove.
 
 ---
