@@ -33,6 +33,10 @@ _TEXT = (240, 240, 240)
 
 class ExoLive(Plugin):
     def setup(self) -> None:
+        if not bool(self.config.get("enabled", True)):
+            self.unavailable("host-owned overlay is enabled in the example instead")
+            return
+
         self._window = str(self.config.get("window_name", "climb-cv — exo skeleton"))
         self._scale = float(self.config.get("scale", 1.0))   # 1.0 = no resize per draw
         self._radius = int(self.config.get("point_radius", 3))

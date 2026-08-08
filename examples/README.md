@@ -44,10 +44,10 @@ python3 examples/01_video_file.py --make-sample --loop   # replay until ESC
 python3 examples/01_video_file.py clip.mp4 --no-display  # headless
 ```
 
-**Two windows open.** `exo_live` shows the feed with the exo skeleton drawn over it, plus a HUD
-with the frame number, the topology, and how many frames stale the pose is. `pose_plot` shows
-the same skeleton as a live matplotlib 3D plot in world coordinates — metres, origin between
-the hips. Press **ESC** in the overlay to stop the run.
+**Two windows open.** The live webcam example draws the feed overlay in the host loop, matching
+the original climb-cv path: the frame, skeleton, and HUD are rendered on the same thread that
+calls `app.poll()`. `pose_plot` shows the same skeleton as a live matplotlib 3D plot in world
+coordinates — metres, origin between the hips. Press **ESC** in the overlay to stop the run.
 
 The generated sample contains no person, so `--make-sample` switches the pose stage from
 `core.pose_mediapipe` to `demo_pose`, a synthetic source that publishes an animated skeleton.
@@ -149,7 +149,7 @@ plugins.
 Use `self.set_interval(self.handler, seconds)` from `setup()` for a configurable rate.
 
 **If you own a window, stash on the handler and draw on a tick.** This is the one that looks
-correct on the page and fails in practice, so both `exo_live` and `pose_plot` demonstrate it:
+correct on the page and fails in practice, so `pose_plot` still demonstrates it:
 
 ```python
 @subscribe("frame")
