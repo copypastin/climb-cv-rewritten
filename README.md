@@ -1,14 +1,13 @@
-# climb-cv
+# climb-cv-rewritten | a climbing computer vision framework
 
-Climbing motion analysis as a plugin architecture. Capture, pose estimation and smoothing are
-plugins, not built-ins, and third parties write plugins against the same API the first-party
-ones use.
 
-This is a rewrite of [copypastin/climb-cv](https://github.com/copypastin/climb-cv), whose
-pipeline was a single loop with optional worker processes bolted on. Here the framework is the
-loop, and everything else — including the camera and the pose model — is a plugin.
+> its like adding mods to Minecraft, but for climbing data
 
-## What works today
+climb-cv-rewritten is a framework for climbing motion analysis, with a dynamic plugin architecture based on [copypastin/climb-cv](https://github.com/copypastin/climb-cv). Easily create, combine, and swap out stages of a pipeline: capture, hold detection, pose estimation, smoothing, visualization, and more.
+
+
+
+## what works today?
 
 ```bash
 pip install -e '.[plugins]'
@@ -51,17 +50,11 @@ everything depends on.
 `__init__` is reserved, why payload arrays are read-only, and why a plugin that owns a window
 must stash on the handler and draw on a tick.
 
-## The architecture in one paragraph
+## architecture at face value
 
-Plugins publish and subscribe to **topics**. A topic is **exclusive** when its payload is a
-singleton observation of a unique subject — two publishers would contradict each other, as with
-one climber's skeleton — and **shared** when publishers merely add, as with hold boxes from two
-detectors. That single distinction is what collapses "replace a core stage" and "add a new stage"
-into the same mechanism: swapping the pose model is pointing an exclusive topic at a different
-plugin, and nothing downstream knows. Every plugin runs in its own process, so a crash is
-contained and no author writes a `Queue`.
+Plugins publish and subscribe to **topics**. A topic is **exclusive** when its payload is a **singleton** observation of a unique subject — two publishers would contradict each other, as with one climber's skeleton — and **shared** when publishers merely add, as with hold boxes from two detectors. That single distinction is what collapses "replace a core stage" and "add a new stage" into the same mechanism: swapping the pose model is pointing an exclusive topic at a different plugin, and nothing downstream knows. Every plugin runs in its own process, so a crash is contained and no author writes a `Queue`.
 
-## Layout
+## layout
 
 ```
 src/climbcv/          the framework, plus bundled first-party plugins
@@ -75,7 +68,7 @@ tests/                212 tests; `pytest -m e2e` adds the slow pipeline test
 design is not decoration: several of its constraints exist because a plausible-looking
 alternative was measured and failed, and the documents say which.
 
-## Status
+## STATUS (PROBABLY MAYBE IMPORTANT)
 
 The API is not stable yet. `PLUGIN_API_VERSION` is `1.0` and plugins declare the version they
 need, but nothing has been published against it, so breaking changes are still cheap and will be
