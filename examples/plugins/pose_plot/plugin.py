@@ -14,12 +14,11 @@ the process that draws it rather than being pickled across a boundary.
 from __future__ import annotations
 
 import time
-from collections import deque
 
 import numpy as np
 
 from climbcv import Plugin, every, subscribe
-from climbcv.topology import edges_for
+from climbcv.rendering import plot_world_landmarks
 
 VISIBILITY, X, Y, Z = 0, 1, 2, 3
 
@@ -53,8 +52,6 @@ class PosePlot(Plugin):
 
         self._plt = plt
         self._limit = float(self.config.get("limit_m", 1.0))
-        self._trail = int(self.config.get("trail", 0))
-        self._history: deque = deque(maxlen=max(self._trail, 1))
         self._pose = None
         self._drawn = 0
 
@@ -85,44 +82,18 @@ class PosePlot(Plugin):
             self._plt.pause(0.001)
             return
 
-        w = pose.world           # (L, 4) metres, origin between the hips, +y DOWN
-        vis = w[:, VISIBILITY]
-        xs, ys, zs = w[:, X], w[:, Y], w[:, Z]
+        # The original's grouping: one scatter for the face and six polylines for the limbs,
+        # shoulders and waist. The previous version issued one ax.plot per skeleton edge --
+        # thirty-five calls a redraw -- which is what made this window stutter. matplotlib 3D
+        # is the expensive thing on screen, so the call count is the whole game.
+        if plot_world_landmarks(self._ax, pose.world, self._limit):
+            self._ax.set_title(f"frame {pose.frame_seq}   {pose.topology}")
+            self._fig.canvas.draw_idle()
+            self._drawn += 1
 
-        ax = self._ax
-        ax.cla()
-
-        for a, b in edges_for(pose.topology):
-            if a >= len(w) or b >= len(w) or vis[a] < 0.3 or vis[b] < 0.3:
-                continue
-            ax.plot([xs[a], xs[b]], [zs[a], zs[b]], [-ys[a], -ys[b]],
-                    color="#42f59e", linewidth=2)
-
-        keep = vis >= 0.3
-        ax.scatter(xs[keep], zs[keep], -ys[keep], s=14, c="#ffd23c", depthshade=False)
-
-        if self._trail:
-            self._history.append((xs.copy(), ys.copy(), zs.copy()))
-            for i, (hx, hy, hz) in enumerate(self._history):
-                if i == len(self._history) - 1:
-                    continue
-                ax.scatter(hx, hz, -hy, s=3, c="#2a6b4a", depthshade=False)
-
-        # Plotted as (x, z, -y): matplotlib's z axis is "up" on screen, and +y is DOWN in the
-        # pose convention, so negating y puts the head at the top instead of the bottom.
-        lim = self._limit
-        ax.set_xlim(-lim, lim)
-        ax.set_ylim(-lim, lim)
-        ax.set_zlim(-lim, lim)
-        ax.set_xlabel("x (m)")
-        ax.set_ylabel("z (m)")
-        ax.set_zlabel("up (m)")
-        ax.set_title(f"frame {pose.frame_seq}   {pose.topology}")
-
-        # pause() both flushes the draw and services the GUI event loop -- this is the
-        # matplotlib equivalent of cv2.waitKey, and leaving it out is the same bug.
+        # pause() both flushes the draw and services the GUI event loop -- matplotlib's
+        # equivalent of cv2.waitKey, and leaving it out is the same bug.
         self._plt.pause(0.001)
-        self._drawn += 1
 
     def teardown(self) -> None:
         self.log.info("rendered %d 3D frames", self._drawn)

@@ -20,11 +20,9 @@ from __future__ import annotations
 import time
 
 import cv2
-import numpy as np
-
 from climbcv import Plugin, every, subscribe
 from climbcv.contracts import Shutdown
-from climbcv.topology import edges_for
+from climbcv.rendering import draw_body_tilt, draw_pose_overlay, pair_pose_with_frame
 
 _SKELETON = (66, 245, 158)   # BGR
 _JOINT = (255, 210, 60)
@@ -43,7 +41,9 @@ class ExoLive(Plugin):
         self._thickness = int(self.config.get("line_width", 2))
         self._show_fps = bool(self.config.get("show_fps", True))
 
-        self._frame = None
+        from collections import OrderedDict
+
+        self._frames: OrderedDict = OrderedDict()   # seq -> Frame, for pairing
         self._drawn = 0
         self._t0 = time.monotonic()
         self._fps = 0.0
@@ -62,36 +62,44 @@ class ExoLive(Plugin):
 
     @subscribe("frame")
     def on_frame(self, frame, meta) -> None:
-        # Stash only. Never draw here: see the module docstring.
-        self._frame = frame
+        # Stash only. Never draw here: see the module docstring. Keeping a short history (not
+        # just the newest) is what lets draw() put the skeleton on the frame it belongs to.
+        self._frames[frame.seq] = frame
+        while len(self._frames) > 12:
+            self._frames.popitem(last=False)
 
     @every(1 / 60)
     def draw(self) -> None:
-        frame = self._frame
+        pose = self.latest("pose.smoothed")
+        # Pair the pose with the frame it was computed from. Drawing the newest pose onto the
+        # newest frame makes the skeleton trail the body by however far the pose stage is
+        # behind -- which is small on a file and very visible on a live camera.
+        frame = pair_pose_with_frame(self._frames, pose)
         if frame is None:
-            return
+            if not self._frames:
+                return
+            frame = next(reversed(self._frames.values()))
+            pose = None
 
         # as_bgr() always returns a fresh writable C-contiguous array, so drawing into it is
         # safe. frame.pixels itself is read-only and shared with nothing.
         canvas = frame.as_bgr()
         if self._scale != 1.0:
             canvas = cv2.resize(canvas, None, fx=self._scale, fy=self._scale)
-        h, w = canvas.shape[:2]
 
-        pose = self.latest("pose.smoothed")
-        if pose is not None and pose.image is not None:
-            self._draw_skeleton(canvas, pose, w, h)
-        else:
-            cv2.putText(canvas, "no pose", (12, h - 16),
+        # One MediaPipe call, as the original did, rather than a Python loop over edges.
+        if not draw_pose_overlay(canvas, pose):
+            cv2.putText(canvas, "no pose", (12, canvas.shape[0] - 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, _TEXT, 1, cv2.LINE_AA)
+        lid = self.latest("device.lid_angle")
+        draw_body_tilt(canvas, pose, lid.value if lid is not None else None)
 
-        self._draw_hud(canvas, frame, pose, w)
+        self._draw_hud(canvas, frame, pose, canvas.shape[1])
 
         cv2.imshow(self._window, canvas)
         # waitKey IS the GUI pump. Without it the window never repaints and the OS marks the
         # app unresponsive, however healthy the pipeline is.
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:  # ESC
+        if (cv2.waitKey(1) & 0xFF) == 27:
             self.log.info("ESC pressed — asking the run to stop")
             self.publish("app.shutdown", Shutdown("ESC pressed in the overlay window"))
 
@@ -101,31 +109,6 @@ class ExoLive(Plugin):
         if dt > 0:
             self._fps = 0.9 * self._fps + 0.1 * (1.0 / dt) if self._fps else 1.0 / dt
         self._last_draw = now
-
-    def _draw_skeleton(self, canvas, pose, w: int, h: int) -> None:
-        """pose.image is normalised to the frame with origin top-left, so pixels are (x*w, y*h).
-
-        Column order is (visibility, x, y, z) — visibility first, which is easy to get wrong.
-        """
-        pts = pose.image
-        vis, xs, ys = pts[:, 0], pts[:, 1], pts[:, 2]
-        px = (xs * w).astype(np.int32)
-        py = (ys * h).astype(np.int32)
-
-        # Edges come from the framework, sourced from mediapipe itself rather than transcribed
-        # here — so every visualiser draws the same skeleton and none of them invents one.
-        for a, b in edges_for(pose.topology):
-            if a >= len(pts) or b >= len(pts):
-                continue
-            if vis[a] < 0.3 or vis[b] < 0.3:
-                continue
-            cv2.line(canvas, (px[a], py[a]), (px[b], py[b]),
-                     _SKELETON, self._thickness, cv2.LINE_AA)
-
-        for i in range(len(pts)):
-            if vis[i] < 0.3:
-                continue
-            cv2.circle(canvas, (px[i], py[i]), self._radius, _JOINT, -1, cv2.LINE_AA)
 
     def _draw_hud(self, canvas, frame, pose, w: int) -> None:
         lines = [f"frame {frame.seq}" + ("  mirrored" if frame.mirrored else "")]

@@ -1,82 +1,47 @@
-"""Run the full pipeline against a LIVE webcam.
+"""Run the full pipeline against a LIVE webcam, with a host-owned overlay and a 3D pose plot.
 
     python3 examples/02_live_webcam.py            # camera 0
     python3 examples/02_live_webcam.py 1          # camera 1
     python3 examples/02_live_webcam.py --no-plot  # skip the 3D plot (the costliest window)
 
-What this shows: the default pipeline (capture → pose → smoothing) with a real camera, a
-third-party plugin consuming pose data, and `poll()` — the method to use when your own program
-owns the main loop.
+Rendering follows the original climb-cv `utils/rendering/exo_live.py`: MediaPipe's own
+`draw_landmarks` for the skeleton, and the torso vector plus angle drawn over it.
 
-Needs a camera and mediapipe. The first run downloads a ~5 MB pose model. If the camera cannot
-be opened, `core.capture` reports itself *unavailable* rather than crashing: not having a
-camera is not a plugin defect, and the log says so.
+The overlay is owned by the host rather than a plugin, mirroring the original's single loop.
+`poll()` drains callbacks on the thread that calls it, so the drawing happens right here, on
+the main thread, where a GUI is allowed to live.
 """
 
 from __future__ import annotations
 
 import sys
+import time
+from collections import OrderedDict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import cv2
-import numpy as np
+import cv2  # noqa: E402
 
 from climbcv.app import ClimbCV  # noqa: E402
-from climbcv.topology import edges_for  # noqa: E402
+from climbcv.rendering import (  # noqa: E402
+    draw_body_tilt,
+    draw_pose_overlay,
+    pair_pose_with_frame,
+)
 
 HERE = Path(__file__).resolve().parent
+WINDOW = "MediaPipe Pose Landmarker"
 
-_SKELETON = (66, 245, 158)
-_JOINT = (255, 210, 60)
-_TEXT = (240, 240, 240)
-
-
-def draw_overlay(canvas: np.ndarray, frame, pose, draws: int, tilt, brightness) -> None:
-    h, w = canvas.shape[:2]
-
-    if pose is not None and pose.image is not None:
-        pts = pose.image
-        vis, xs, ys = pts[:, 0], pts[:, 1], pts[:, 2]
-        px = (xs * w).astype(np.int32)
-        py = (ys * h).astype(np.int32)
-
-        for a, b in edges_for(pose.topology):
-            if a >= len(pts) or b >= len(pts):
-                continue
-            if vis[a] < 0.3 or vis[b] < 0.3:
-                continue
-            cv2.line(canvas, (px[a], py[a]), (px[b], py[b]),
-                     _SKELETON, 2, cv2.LINE_AA)
-
-        for i in range(len(pts)):
-            if vis[i] < 0.3:
-                continue
-            cv2.circle(canvas, (px[i], py[i]), 3, _JOINT, -1, cv2.LINE_AA)
-    else:
-        cv2.putText(canvas, "no pose", (12, h - 16), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5, _TEXT, 1, cv2.LINE_AA)
-
-    lines = [f"frame {frame.seq}" + ("  mirrored" if frame.mirrored else "")]
-    if pose is not None:
-        lines.append(f"pose {pose.topology}  lag {frame.seq - pose.frame_seq} frame(s)")
-    if tilt is not None:
-        lines.append(f"tilt {tilt:+.1f} deg")
-    if brightness is not None:
-        lines.append(f"brightness {brightness:.1f}")
-    lines.append(f"draw {draws} frames")
-
-    for i, text in enumerate(lines):
-        cv2.putText(canvas, text, (12, 24 + i * 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, _TEXT, 1, cv2.LINE_AA)
+# How many recent frames to keep so a pose can be matched to the frame it came from. The pose
+# stage is a few frames behind at most; a dozen is generous and costs nothing, since these are
+# the same read-only buffers already delivered.
+_FRAME_HISTORY = 12
 
 
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     device = int(args[0]) if args else 0
-    # matplotlib is the most expensive thing on screen. --no-plot isolates it, which is the
-    # first thing to try if the feed feels slow.
     plot = "--no-plot" not in sys.argv[1:]
 
     app = ClimbCV({
@@ -88,89 +53,98 @@ def main() -> None:
         "plugins": {
             "core.capture": {
                 "device": device, "mirror": True,
-                # 640x480 deliberately. A webcam left at its native 1280x720 or 1920x1080
-                # costs real time in read(), in the mirror flip, and in every draw -- and
-                # the pose model downscales internally anyway, so the extra pixels buy
-                # nothing. Raise it if you want a prettier overlay, not for accuracy.
+                # 640x480 deliberately: the pose model downscales internally, so extra pixels
+                # cost time in read(), in the mirror flip and in every draw, and buy nothing.
                 "width": 640, "height": 480,
             },
-            # "gpu" is opt-in: on some machines MediaPipe's GPU delegate initialises fine and
-            # then aborts during inference, which no exception handler can catch. CPU is the
-            # default because it works everywhere.
             "core.pose_mediapipe": {"delegate": "cpu"},
             "core.smooth_oneeuro": {"min_cutoff": 1.0, "beta": 0.3},
-            "brightness": {"report_every_s": 5.0},
-            "body_tilt": {"min_visibility": 0.5},
-            # The two windows: overlay + live 3D. Both run in their own processes, so a slow
-            # matplotlib redraw cannot stall the capture loop.
-            # The overlay is host-owned here so it matches the original climb-cv loop.
+            "brightness": {"report_every_s": 10.0},
+            # The overlay is host-owned here, so the plugin version stays off.
             "exo_live": {"enabled": False},
+            "body_tilt": {"enabled": False},   # drawn inline, the way the original did
             "pose_plot": {"enabled": plot, "redraw_hz": 10, "limit_m": 1.0},
-            # Only one publisher of pose.raw may run, and here it is the real model.
-            "demo_pose": {"enabled": False},
+            "demo_pose": {"enabled": False},   # only one publisher of pose.raw may run
         },
     })
 
-    latest = {"frame": None, "pose": None, "tilt": None, "brightness": None, "poses": 0}
+    frames: OrderedDict[int, object] = OrderedDict()
+    state = {"pose": None, "lid": None, "poses": 0, "drawn": 0}
 
     def on_frame(frame, meta) -> None:
-        latest["frame"] = frame
-
-    def on_tilt(scalar, meta) -> None:
-        latest["tilt"] = scalar.value
-
-    def on_brightness(scalar, meta) -> None:
-        latest["brightness"] = scalar.value
+        frames[frame.seq] = frame
+        while len(frames) > _FRAME_HISTORY:
+            frames.popitem(last=False)
 
     def on_pose(pose, meta) -> None:
-        latest["pose"] = pose
-        latest["poses"] += 1
+        state["pose"] = pose
+        state["poses"] += 1
+
+    def on_lid(scalar, meta) -> None:
+        state["lid"] = scalar.value
 
     app.subscribe("frame", on_frame, required=False)
-    app.subscribe("example.body_tilt", on_tilt, required=False)
-    app.subscribe("example.brightness", on_brightness, required=False)
-    # Subscribing to a pose topic without requires_topology raises HERE, at the call site, so
-    # your own traceback names the exact line. "any" opts out when you do not index joints.
     app.subscribe("pose.smoothed", on_pose, required=False, requires_topology="any")
+    app.subscribe("device.lid_angle", on_lid, required=False)
 
     try:
-        cv2.namedWindow("climb-cv — overlay", cv2.WINDOW_NORMAL)
+        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+        overlay = True
     except cv2.error as exc:
         print(f"overlay disabled: cannot open a window: {exc}")
-        overlay_enabled = False
-    else:
-        overlay_enabled = True
+        overlay = False
 
-    print("starting — stand in front of the camera.\n"
-          "Two windows open: overlay and 3D pose. ESC in the overlay (or Ctrl-C) stops.\n")
+    print("starting — stand in front of the camera. ESC in the overlay (or Ctrl-C) stops.\n")
     app.start()
 
+    fps, prev_t, last_status = 0.0, None, 0.0
     try:
-        draw_count = 0
-        # poll() drains callbacks on the thread that calls it. That matters if your program
-        # owns a GUI: your callbacks run where you can touch your own widgets, instead of
-        # arriving on a framework thread you know nothing about.
         while True:
-            app.poll(0.0)
+            # A small timeout rather than 0.0: polling in a hot spin burns a core for nothing
+            # and leaves less CPU for the stages that are actually doing work.
+            app.poll(0.005)
 
-            tilt = latest["tilt"]
-            bright = latest["brightness"]
-            line = (
-                f"\rposes {latest['poses']:<6}"
-                f"tilt {tilt:+6.1f}deg  " if tilt is not None else
-                f"\rposes {latest['poses']:<6}tilt   --     "
-            )
-            line += f"brightness {bright:5.1f}" if bright is not None else "brightness   -- "
-            print(line, end="", flush=True)
+            pose = state["pose"]
+            # THE fix for a skeleton that trails the body: draw the pose on the frame it was
+            # computed from, not on the newest one. The original got this for free by drawing
+            # inside the detection loop; in a pipeline the pose is a few frames behind, and
+            # pairing by frame_seq is what puts the skeleton back on the body.
+            frame = pair_pose_with_frame(frames, pose)
+            if frame is None and frames:
+                frame = next(reversed(frames.values()))   # no pose yet: show the live feed
+                pose = None
 
-            if overlay_enabled and latest["frame"] is not None:
-                canvas = latest["frame"].as_bgr()
-                draw_overlay(canvas, latest["frame"], latest["pose"], draw_count, tilt, bright)
-                cv2.imshow("climb-cv — overlay", canvas)
-                draw_count += 1
+            if overlay and frame is not None:
+                canvas = frame.as_bgr()
+
+                now = time.time()
+                if pose is not None:
+                    if prev_t:
+                        fps = 1.0 / (now - prev_t) if now > prev_t else fps
+                    prev_t = now
+                    draw_pose_overlay(canvas, pose)
+
+                cv2.putText(canvas, f"FPS: {int(fps)}", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                if state["lid"] is not None:
+                    cv2.putText(canvas, f"Mac Camera Angle: {state['lid']:.0f}", (10, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                else:
+                    cv2.putText(canvas, "Mac Camera Angle: n/a", (10, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                draw_body_tilt(canvas, pose, state["lid"])
+
+                cv2.imshow(WINDOW, canvas)
+                state["drawn"] += 1
                 if cv2.waitKey(1) & 0xFF == 27:
-                    app.stop()
                     break
+
+            # Throttled to 5 Hz. A flushed terminal write on every pass of a fast loop is
+            # thousands of writes a second, and it makes the whole loop stutter.
+            if time.monotonic() - last_status > 0.2:
+                last_status = time.monotonic()
+                print(f"\rposes {state['poses']:<6} drawn {state['drawn']:<6} "
+                      f"pose fps {fps:4.1f}   ", end="", flush=True)
 
             capture = app.states.get("core.capture")
             if capture is not None and capture.state in ("unavailable", "quarantined"):
@@ -179,20 +153,17 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n\nstopping…")
     finally:
-        if overlay_enabled:
-            try:
-                cv2.destroyWindow("climb-cv — overlay")
-                cv2.waitKey(1)
-            except cv2.error:
-                pass
         app.stop()
+        if overlay:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
 
-    print("\nfinal plugin states:")
-    for pid, state in sorted(app.states.items()):
-        print(f"  {pid:<24}{state.state}"
-              + (f"  ({state.detail[:60]})" if state.detail else ""))
+    print(f"\n{state['poses']} poses, {state['drawn']} frames drawn")
+    for pid, st in sorted(app.states.items()):
+        detail = f"  ({st.detail.splitlines()[0][:60]})" if st.detail else ""
+        print(f"  {pid:<24}{st.state}{detail}")
 
 
 if __name__ == "__main__":
-    # REQUIRED — see the note at the bottom of 01_video_file.py.
+    # REQUIRED — 'spawn' re-imports this file in every child process.
     main()
