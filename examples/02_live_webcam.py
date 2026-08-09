@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import sys
 import time
-from collections import OrderedDict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -24,20 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import cv2  # noqa: E402
 
 from climbcv.app import ClimbCV  # noqa: E402
-from climbcv.rendering import (  # noqa: E402
-    draw_body_tilt,
-    draw_pose_overlay,
-    pair_pose_with_frame,
-)
+from climbcv.rendering import draw_body_tilt, draw_pose_overlay  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 WINDOW = "MediaPipe Pose Landmarker"
-
-# How many recent frames to keep so a pose can be matched to the frame it came from. The pose
-# stage is a few frames behind at most; a dozen is generous and costs nothing, since these are
-# the same read-only buffers already delivered.
-_FRAME_HISTORY = 12
-
 
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -68,13 +57,10 @@ def main() -> None:
         },
     })
 
-    frames: OrderedDict[int, object] = OrderedDict()
-    state = {"pose": None, "lid": None, "poses": 0, "drawn": 0}
+    state = {"frame": None, "pose": None, "lid": None, "poses": 0, "drawn": 0}
 
     def on_frame(frame, meta) -> None:
-        frames[frame.seq] = frame
-        while len(frames) > _FRAME_HISTORY:
-            frames.popitem(last=False)
+        state["frame"] = frame
 
     def on_pose(pose, meta) -> None:
         state["pose"] = pose
@@ -104,15 +90,10 @@ def main() -> None:
             # and leaves less CPU for the stages that are actually doing work.
             app.poll(0.005)
 
-            pose = state["pose"]
-            # THE fix for a skeleton that trails the body: draw the pose on the frame it was
-            # computed from, not on the newest one. The original got this for free by drawing
-            # inside the detection loop; in a pipeline the pose is a few frames behind, and
-            # pairing by frame_seq is what puts the skeleton back on the body.
-            frame = pair_pose_with_frame(frames, pose)
-            if frame is None and frames:
-                frame = next(reversed(frames.values()))   # no pose yet: show the live feed
-                pose = None
+            # Newest frame, newest pose — the way the original worked. Holding frames back to
+            # match a pose to the exact frame it came from delays the VIDEO by the pose
+            # latency, which is worse than the sub-frame offset it removes.
+            frame, pose = state["frame"], state["pose"]
 
             if overlay and frame is not None:
                 canvas = frame.as_bgr()
@@ -150,6 +131,7 @@ def main() -> None:
             if capture is not None and capture.state in ("unavailable", "quarantined"):
                 print(f"\n\ncapture is {capture.state}: {capture.detail}")
                 break
+
     except KeyboardInterrupt:
         print("\n\nstopping…")
     finally:

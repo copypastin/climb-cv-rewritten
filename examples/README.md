@@ -173,9 +173,10 @@ Synchronising those in handlers means keeping state and guessing; `self.latest(t
 the newest of each at the moment you draw. Declare `mode = "latest"` on such a subscription so
 the framework knows you meant to have no handler.
 
-**Skeleton edges come from the framework.** `climbcv.topology.edges_for(topology)` returns the
-landmark pairs to draw, read from MediaPipe itself rather than transcribed — so every visualiser
-draws the same skeleton and none of them hardcodes a private copy.
+**Rendering helpers come from the framework.** `climbcv.rendering` provides
+`draw_pose_overlay` (MediaPipe's own `draw_landmarks`, so the skeleton matches what MediaPipe
+draws everywhere else), `draw_body_tilt` and `plot_world_landmarks` — so every visualiser draws
+the same skeleton instead of hardcoding a private copy.
 
 ## 4. Configuration
 

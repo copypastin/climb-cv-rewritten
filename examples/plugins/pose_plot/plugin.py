@@ -74,7 +74,7 @@ class PosePlot(Plugin):
         # leave the window unpumped between messages.
         self._pose = pose
 
-    @every(1 / 15)
+    @every(0)
     def redraw(self) -> None:
         pose = self._pose
         if pose is None:

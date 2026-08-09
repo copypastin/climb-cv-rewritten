@@ -22,7 +22,7 @@ import time
 import cv2
 from climbcv import Plugin, every, subscribe
 from climbcv.contracts import Shutdown
-from climbcv.rendering import draw_body_tilt, draw_pose_overlay, pair_pose_with_frame
+from climbcv.rendering import draw_body_tilt, draw_pose_overlay
 
 _SKELETON = (66, 245, 158)   # BGR
 _JOINT = (255, 210, 60)
@@ -41,9 +41,7 @@ class ExoLive(Plugin):
         self._thickness = int(self.config.get("line_width", 2))
         self._show_fps = bool(self.config.get("show_fps", True))
 
-        from collections import OrderedDict
-
-        self._frames: OrderedDict = OrderedDict()   # seq -> Frame, for pairing
+        self._frame = None
         self._drawn = 0
         self._t0 = time.monotonic()
         self._fps = 0.0
@@ -62,24 +60,15 @@ class ExoLive(Plugin):
 
     @subscribe("frame")
     def on_frame(self, frame, meta) -> None:
-        # Stash only. Never draw here: see the module docstring. Keeping a short history (not
-        # just the newest) is what lets draw() put the skeleton on the frame it belongs to.
-        self._frames[frame.seq] = frame
-        while len(self._frames) > 12:
-            self._frames.popitem(last=False)
+        # Stash only. Never draw here: see the module docstring.
+        self._frame = frame
 
     @every(1 / 60)
     def draw(self) -> None:
-        pose = self.latest("pose.smoothed")
-        # Pair the pose with the frame it was computed from. Drawing the newest pose onto the
-        # newest frame makes the skeleton trail the body by however far the pose stage is
-        # behind -- which is small on a file and very visible on a live camera.
-        frame = pair_pose_with_frame(self._frames, pose)
+        frame = self._frame
         if frame is None:
-            if not self._frames:
-                return
-            frame = next(reversed(self._frames.values()))
-            pose = None
+            return
+        pose = self.latest("pose.smoothed")
 
         # as_bgr() always returns a fresh writable C-contiguous array, so drawing into it is
         # safe. frame.pixels itself is read-only and shared with nothing.

@@ -18,7 +18,7 @@ from climbcv.contracts import PoseFrame
 
 _MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-    "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+    "pose_landmarker_full/float16/1/pose_landmarker_full.task"
 )
 _TOPOLOGY = "mediapipe.pose.33"
 
@@ -92,7 +92,7 @@ class MediaPipePose(Plugin):
         # data_dir belongs to this plugin and is created before setup() runs. Downloading into
         # the plugin's own directory would break under a read-only install, and the bundled
         # root always is read-only.
-        cached = Path(self.data_dir) / "pose_landmarker_lite.task"
+        cached = Path(self.data_dir) / "pose_landmarker_full.task"
         if not cached.is_file():
             self.log.info("downloading the pose model to %s (about 5 MB, once)", cached)
             try:

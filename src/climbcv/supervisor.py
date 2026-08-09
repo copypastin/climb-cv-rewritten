@@ -50,6 +50,7 @@ class PluginState:
     last_beat: float = field(default_factory=time.monotonic)
     stall_warned: bool = False
     process: Any = None
+    restart_at: float = 0.0     # scheduled restart time; kept OFF `detail`, which is human text
 
 
 class Supervisor:
@@ -281,6 +282,8 @@ class Supervisor:
                 for fn in self._host_callbacks.get(topic, ()):
                     fn(payload, meta)
 
+        self._reap_dead()
+
         for pid in self.due_restarts():
             state = self.states[pid]
             state.state, state.detail = "starting", ""
@@ -288,6 +291,69 @@ class Supervisor:
             self._spawn(pid, self._queues)
 
         self._check_stalls()
+
+    _SIGNALS = {
+        4: "SIGILL — illegal instruction",
+        6: "SIGABRT — the process called abort(), which is what a C++ library does when it "
+           "hits a fatal error it cannot raise through Python",
+        8: "SIGFPE — arithmetic error",
+        9: "SIGKILL — killed by the OS, commonly the out-of-memory killer",
+        11: "SIGSEGV — segmentation fault inside native code",
+    }
+
+    def _reap_dead(self) -> None:
+        """Notice a child that died WITHOUT reporting, and say so attributably.
+
+        A plugin that raises in Python sends CRASHED on its way out, with a traceback. A plugin
+        killed by a native abort or a signal sends nothing at all: its process simply vanishes,
+        no `except` clause ever runs, and nothing reaches the control queue. Without this check
+        such a plugin sits in `starting` forever — the supervisor waiting for a message from a
+        process that no longer exists, and the user watching a window that never updates with
+        no error anywhere to explain it.
+
+        This is the failure mode a pose or vision plugin is *most* likely to hit, because those
+        are exactly the plugins wrapping large C++ libraries.
+        """
+        terminal = ("quarantined", "unavailable", "finished", "crashed")
+        for pid, state in self.states.items():
+            proc = state.process
+            if proc is None or state.state in terminal or proc.is_alive():
+                continue
+
+            code = proc.exitcode
+            if code == 0:
+                # Exited cleanly without saying why. Treat as finished rather than crashed:
+                # it did not fail, it just did not announce itself.
+                state.state, state.detail = "finished", "exited without reporting"
+                log.info("%s exited cleanly without reporting. Treating it as finished.", pid)
+                self._maybe_shutdown_for_absent_publisher(pid, "finished")
+                continue
+
+            if code is not None and code < 0:
+                signum = -code
+                why = self._SIGNALS.get(signum, f"signal {signum}")
+                detail = (
+                    f"killed by {why}.\n"
+                    f"Nothing was reported because the process was terminated outright — "
+                    f"Python never got to run an exception handler, which is why there is no "
+                    f"traceback and no log line from the plugin itself."
+                )
+            else:
+                detail = (
+                    f"exited with status {code} without reporting. A non-zero exit with no "
+                    f"traceback usually means the process called exit() or died inside a "
+                    f"native library."
+                )
+
+            was_starting = state.state == "starting"
+            if was_starting:
+                detail += (
+                    "\nIt died during setup(), before it had ever run a handler — so this is a "
+                    "startup fault (a model file, a device, or a native library), not something "
+                    "your data triggered."
+                )
+            # Route through the normal crash policy so backoff and quarantine still apply.
+            self._handle_control(pid, CRASHED, detail)
 
     def _handle_control(self, plugin_id: str, kind: str, detail: str) -> None:
         state = self.states.get(plugin_id)
@@ -354,7 +420,8 @@ class Supervisor:
             )
             log.info("Restarting %s in %.1fs (attempt %d).", plugin_id, backoff, state.restarts)
             # Restart is scheduled rather than immediate; the caller's next poll() picks it up.
-            state.detail = f"restart_at:{now + backoff}"
+            state.detail = detail
+            state.restart_at = now + backoff
 
     def _check_stalls(self) -> None:
         now = time.monotonic()
@@ -419,16 +486,14 @@ class Supervisor:
                 return
 
     def due_restarts(self) -> list[str]:
-        """Plugin ids whose backoff has elapsed. The caller respawns them."""
+        """Plugin ids whose backoff has elapsed. Read from `restart_at`, not from `detail`:
+        `detail` is the human explanation of what went wrong and must survive until the plugin
+        is running again, or the diagnostic an operator reads is a scheduling timestamp."""
         now = time.monotonic()
-        out = []
-        for pid, state in self.states.items():
-            if state.state == "crashed" and state.detail.startswith("restart_at:"):
-                if now >= float(state.detail.split(":", 1)[1]):
-                    out.append(pid)
-        return out
-
-    # ---------------------------------------------------------------- host callbacks
+        return [
+            pid for pid, state in self.states.items()
+            if state.state == "crashed" and 0 < state.restart_at <= now
+        ]
 
     def on(self, topic: str, fn: Callable) -> None:
         self._host_callbacks.setdefault(topic, []).append(fn)

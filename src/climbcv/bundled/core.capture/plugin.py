@@ -31,7 +31,10 @@ class Capture(Plugin):
         # already blocks in read() until its next frame, so sleeping first and then blocking
         # again halves the rate -- a 30fps device gated at 30fps delivers about 15. For a
         # camera we ask the DEVICE for the rate instead and let it do the pacing.
-        self._fps_cap = float(self.config.get("fps", 0) or 0) if source else 0.0
+        # A rate for BOTH kinds of source. For a file it paces playback; for a camera it
+        # stops the loop spinning on duplicate frames when the device cannot keep up with the
+        # rate being asked of it. Defaults to the device's own reported rate, set in setup().
+        self._fps_cap = float(self.config.get("fps", 0) or 0)
         self._label = str(source) if source else f"camera:{device}"
 
         target = str(source) if source else int(device)
@@ -71,6 +74,9 @@ class Capture(Plugin):
             # buffered while a downstream stage was busy, so the overlay shows the past: the
             # latency grows with the buffer and never recovers.
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # Deliberately NOT capping at the device's reported rate. Cameras under-report:
+            # this one says 15 fps and delivers about 30, so trusting the report halves the
+            # frame rate. `fps` remains available as an explicit cap when you want one.
 
         w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -90,15 +96,9 @@ class Capture(Plugin):
         read blocks — and `self.stopping` is a property over the framework's shutdown event
         precisely so this loop can see a shutdown that began while it was blocked.
         """
-        next_at = 0.0
+        interval = (1.0 / self._fps_cap) if self._fps_cap else 0.0
+        next_at = time.monotonic()
         while not self.stopping:
-            if self._fps_cap:
-                now = time.monotonic()
-                if now < next_at:
-                    time.sleep(min(next_at - now, 0.005))
-                    continue
-                next_at = now + 1.0 / self._fps_cap
-
             ok, frame = self._cap.read()
             if not ok:
                 if self._loop and self.config.get("source"):
@@ -113,6 +113,28 @@ class Capture(Plugin):
             t_capture_ns = time.monotonic_ns()
             if self._mirror:
                 frame = cv2.flip(frame, 1)
+
+            # Pace AFTER the read, never before it. A camera whose read() blocks needs no
+            # pacing and gets none, because the deadline has already passed by the time we
+            # arrive here. A camera that returns duplicates immediately -- which is what a
+            # 15 fps device does when asked for frames faster than it has them -- would
+            # otherwise spin flat out, burning a core and flooding every subscriber's queue
+            # with redundant frames. Sleeping BEFORE the read was the earlier bug: it added
+            # its wait to the device's own, halving the rate.
+            if interval:
+                now = time.monotonic()
+                if now < next_at:
+                    remaining = next_at - now
+                    while remaining > 0 and not self.stopping:
+                        time.sleep(min(remaining, 0.005))
+                        remaining = next_at - time.monotonic()
+                    if self.stopping:
+                        return
+                    next_at += interval
+                else:
+                    # Behind schedule: reset rather than accumulating debt, or a slow patch
+                    # makes the source sprint to catch up.
+                    next_at = now + interval
 
             self._seq += 1
             if self._seq - self._reported >= 150:

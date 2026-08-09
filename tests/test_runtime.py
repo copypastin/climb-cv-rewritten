@@ -325,3 +325,78 @@ def test_stop_releases_the_guard_so_a_fresh_instance_can_run(tmp_path):
         second.start()  # must not raise
     finally:
         second.stop()
+
+
+# ---------------------------------------------- a child that dies without reporting
+
+ABORTER = """
+import os, signal
+from climbcv import Plugin
+class Aborter(Plugin):
+    def setup(self):
+        # A native abort, which is what a C++ vision library does on a fatal error. No Python
+        # exception is raised, so nothing is ever sent on the control queue.
+        os.kill(os.getpid(), signal.SIGABRT)
+"""
+
+SILENT_EXIT = """
+import os
+from climbcv import Plugin
+class Quitter(Plugin):
+    def setup(self):
+        os._exit(3)
+"""
+
+
+def _settled(sup, pid):
+    def check():
+        sup.poll(0.05)
+        return sup.states[pid].state in ("crashed", "quarantined")
+    return check
+
+
+def test_child_killed_by_a_signal_is_noticed_and_explained(tmp_path):
+    """The supervisor must reap dead children, not only read the control queue.
+
+    A plugin that raises in Python reports its own crash with a traceback. A plugin killed by a
+    native abort reports NOTHING -- the process vanishes and no handler runs. Without an
+    aliveness check it sits in 'starting' forever: no error, no log line, and a user staring at
+    a window that never updates. Vision plugins wrap large C++ libraries, which makes this the
+    most likely way for one to fail.
+    """
+    make(tmp_path / "plugins", "aborter", ABORTER, subscribes=(), publishes=())
+    sup = build(tmp_path)
+    try:
+        sup.start()
+        assert wait_for(_settled(sup, "aborter")), "a signalled child was never noticed"
+        detail = sup.states["aborter"].detail
+        assert "SIGABRT" in detail, detail
+        assert "during setup()" in detail, "should say it died before running a handler"
+    finally:
+        sup.stop()
+
+
+def test_child_exiting_nonzero_without_reporting_is_noticed(tmp_path):
+    make(tmp_path / "plugins", "quitter", SILENT_EXIT, subscribes=(), publishes=())
+    sup = build(tmp_path)
+    try:
+        sup.start()
+        assert wait_for(_settled(sup, "quitter"))
+        assert "status 3" in sup.states["quitter"].detail, sup.states["quitter"].detail
+    finally:
+        sup.stop()
+
+
+def test_crash_detail_is_the_reason_not_a_restart_timestamp(tmp_path):
+    """`detail` is what an operator reads when something breaks. Smuggling the restart schedule
+    through it means the diagnostic they get is a float."""
+    make(tmp_path / "plugins", "aborter2", ABORTER, subscribes=(), publishes=())
+    sup = build(tmp_path)
+    try:
+        sup.start()
+        assert wait_for(_settled(sup, "aborter2"))
+        state = sup.states["aborter2"]
+        assert not state.detail.startswith("restart_at:")
+        assert state.restart_at >= 0.0
+    finally:
+        sup.stop()

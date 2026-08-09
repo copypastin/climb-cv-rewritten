@@ -1,15 +1,12 @@
-"""Tests for climbcv.rendering — the pose/frame pairing and the two draw paths.
+"""Tests for climbcv.rendering — the two draw paths the original climb-cv used.
 
-The pairing tests are the important ones. A skeleton drawn on the wrong frame still *looks*
-like a skeleton, so this failure has no crash, no log line and no wrong number anywhere — it
-just trails the body, and only a human watching a live camera notices. That makes it exactly
-the kind of bug worth pinning down in a test.
+The 3D plot's call count is asserted deliberately: matplotlib's canvas draw dominates that
+window (21 ms measured), so the only thing worth controlling is how much work is handed to it.
 """
 
 from __future__ import annotations
 
 import sys
-from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +18,6 @@ from climbcv.contracts import Frame, PoseFrame  # noqa: E402
 from climbcv.rendering import (  # noqa: E402
     draw_body_tilt,
     draw_pose_overlay,
-    pair_pose_with_frame,
     plot_world_landmarks,
 )
 
@@ -38,36 +34,6 @@ def pose(frame_seq: int, *, upright: bool = True) -> PoseFrame:
     img[23, 1:] = (0.45, 0.60, 0.0) if upright else (0.25, 0.60, 0.0)
     img[24, 1:] = (0.55, 0.60, 0.0) if upright else (0.35, 0.60, 0.0)
     return PoseFrame(frame_seq, 0, "mediapipe.pose.33", False, img.copy(), img, True)
-
-
-# ------------------------------------------------------------------ pairing
-
-
-def test_pose_is_paired_with_the_frame_it_was_computed_from():
-    """The whole fix. The pose stage runs behind capture, so the newest pose belongs to an
-    older frame; drawing it on the newest frame is what makes the skeleton trail the body."""
-    frames = OrderedDict((i, frame(i)) for i in range(10, 20))
-    assert pair_pose_with_frame(frames, pose(13)).seq == 13
-    assert pair_pose_with_frame(frames, pose(19)).seq == 19
-
-
-def test_pairing_returns_none_when_the_frame_has_been_evicted():
-    """Better to draw the frame alone than to draw a mismatched pair."""
-    frames = OrderedDict((i, frame(i)) for i in range(10, 20))
-    assert pair_pose_with_frame(frames, pose(3)) is None
-
-
-def test_pairing_handles_no_pose_yet():
-    assert pair_pose_with_frame(OrderedDict(), None) is None
-    assert pair_pose_with_frame(OrderedDict({1: frame(1)}), None) is None
-
-
-def test_pairing_never_returns_a_newer_frame_than_the_pose():
-    """The failure this guards against: silently falling back to 'newest' inside the pairing
-    helper would reintroduce exactly the lag it exists to remove."""
-    frames = OrderedDict((i, frame(i)) for i in range(0, 30))
-    for seq in (0, 7, 15, 29):
-        assert pair_pose_with_frame(frames, pose(seq)).seq == seq
 
 
 # ------------------------------------------------------------------ 2D overlay
@@ -158,11 +124,3 @@ def test_plot_world_landmarks_rejects_junk_without_raising():
 
     assert plot_world_landmarks(FakeAx(), None) is False
     assert plot_world_landmarks(FakeAx(), np.zeros((4, 4), np.float32)) is False
-
-
-@pytest.mark.parametrize("seq", [0, 1, 999])
-def test_pairing_round_trip_matches_what_the_overlay_would_draw(seq):
-    frames = OrderedDict({seq: frame(seq)})
-    p = pose(seq)
-    matched = pair_pose_with_frame(frames, p)
-    assert matched is not None and matched.seq == p.frame_seq

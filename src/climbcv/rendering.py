@@ -25,7 +25,6 @@ __all__ = [
     "draw_pose_overlay",
     "draw_body_tilt",
     "plot_world_landmarks",
-    "pair_pose_with_frame",
 ]
 
 VISIBILITY, X, Y, Z = 0, 1, 2, 3
@@ -67,24 +66,6 @@ def _mp():
         except Exception:
             _cache["mp"] = None
     return _cache["mp"]
-
-
-def pair_pose_with_frame(frames: dict[int, object], pose) -> object | None:
-    """The frame this pose was actually computed from, by `frame_seq`.
-
-    THIS is what keeps the skeleton from trailing the video. The original drew the skeleton
-    inside the detection loop, onto the very frame the result came from, so the two could not
-    disagree. In a pipeline the pose arrives several frames later — inference plus two queue
-    hops — so drawing the newest pose onto the newest frame puts the skeleton visibly behind
-    the body, and the faster the camera runs the worse it looks.
-
-    `frames` is a seq -> Frame mapping of recent frames; keep it small (a dozen is plenty).
-    Returns None when the matching frame has already been evicted, in which case the caller
-    should draw the frame alone rather than a mismatched pair.
-    """
-    if pose is None:
-        return None
-    return frames.get(pose.frame_seq)
 
 
 def draw_pose_overlay(image_bgr: np.ndarray, pose) -> bool:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import logging.handlers
 import queue
 import sys
@@ -167,6 +168,14 @@ def _send(control: Any, plugin_id: str, kind: str, detail: str = "") -> None:
         pass
 
 
+_SETUP_STACK_DUMP_S = float(os.environ.get("CLIMBCV_SETUP_STACK_DUMP_S", "20") or 20)
+"""Seconds before a still-running setup() dumps its stack. Diagnostic only, never fatal.
+
+Env-tunable because the child is spawned: a value set in the parent process does not reach it,
+and the whole point is to be able to shorten the wait while chasing a hang.
+"""
+
+
 def child_main(
     spec: ChildSpec,
     in_queues: dict[str, Any],
@@ -228,7 +237,33 @@ def child_main(
         Path(spec.data_dir).mkdir(parents=True, exist_ok=True)
 
         before = set(vars(instance))
-        instance.setup()
+
+        # If setup() overruns, dump this child's stack to stderr and keep waiting.
+        #
+        # A plugin that hangs in setup() is otherwise completely opaque: it never reports
+        # READY, it is still alive so the supervisor's dead-child reap does not fire, and it
+        # has produced no log line because it never got far enough to log. The supervisor can
+        # say "it is still starting" and nothing more. Only the child itself knows where it is
+        # blocked, and this is the one cheap way to ask it.
+        #
+        # Deliberately does NOT exit: a slow setup is legitimate (a model download, a device
+        # warming up), and F-16 is right that no threshold can separate slow from hung. So this
+        # diagnoses without intervening -- print the stack, carry on, let the operator decide.
+        _watchdog = None
+        try:
+            import faulthandler
+
+            timeout = float(getattr(spec, "setup_warn_s", 0) or 0) or _SETUP_STACK_DUMP_S
+            faulthandler.dump_traceback_later(timeout, exit=False, file=sys.stderr)
+            _watchdog = faulthandler
+        except Exception:  # noqa: BLE001 — diagnostics must never break the run
+            _watchdog = None
+
+        try:
+            instance.setup()
+        finally:
+            if _watchdog is not None:
+                _watchdog.cancel_dump_traceback_later()
         # S22: catch a member rebound during setup() while the message can still be clear.
         from .plugin import RESERVED_NAMES
 
