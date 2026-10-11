@@ -19,11 +19,15 @@ a plugin that never draws never pays for them.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 __all__ = [
-    "draw_pose_overlay",
     "draw_body_tilt",
+    "draw_pose_overlay",
+    "is_pose_fresh",
+    "match_pose_frame",
     "plot_world_landmarks",
 ]
 
@@ -38,6 +42,31 @@ _LINE_COLOR = (0, 0, 255)
 _TILT_COLOR = (0, 255, 0)
 
 _cache: dict = {}
+
+
+def is_pose_fresh(pose, max_age_ms: float = 250.0, *, now_ns: int | None = None) -> bool:
+    """Use capture time, not arrival time: queued or repeated poses must still expire."""
+    if pose is None:
+        return False
+    if now_ns is None:
+        now_ns = time.monotonic_ns()
+    age_ns = now_ns - pose.t_capture_ns
+    return 0 <= age_ns <= max_age_ms * 1_000_000
+
+
+def match_pose_frame(latest_frame, frames, pose, max_age_ms: float = 250.0,
+                     *, now_ns: int | None = None):
+    """Pair a fresh pose with its source frame, or show live video without a skeleton.
+
+    Capture timestamps disambiguate reused sequence numbers after a source restart.
+    """
+    if is_pose_fresh(pose, max_age_ms, now_ns=now_ns):
+        frame = frames.get(pose.frame_seq)
+        if (frame is not None and frame.seq == pose.frame_seq
+                and frame.t_capture_ns == pose.t_capture_ns
+                and frame.mirrored == pose.mirrored):
+            return frame, pose
+    return latest_frame, None
 
 
 def _mp():
@@ -78,8 +107,10 @@ def draw_pose_overlay(image_bgr: np.ndarray, pose) -> bool:
     if pose is None or pose.image is None:
         return False
 
-    parts = _mp()
     pts = pose.image
+    if not np.any(pts[:, VISIBILITY] >= 0.5):
+        return False
+    parts = _mp()
     if parts is None:
         return _draw_points_fallback(image_bgr, pts)
 
@@ -100,11 +131,13 @@ def _draw_points_fallback(image_bgr: np.ndarray, pts: np.ndarray) -> bool:
     import cv2
 
     h, w = image_bgr.shape[:2]
+    drawn = False
     for p in pts:
-        if p[VISIBILITY] < 0.3:
+        if p[VISIBILITY] < 0.5:
             continue
         cv2.circle(image_bgr, (int(p[X] * w), int(p[Y] * h)), 2, _POINT_COLOR, -1)
-    return True
+        drawn = True
+    return drawn
 
 
 def draw_body_tilt(
@@ -126,7 +159,7 @@ def draw_body_tilt(
     if pose is None or pose.image is None:
         return None
     pts = pose.image
-    if min(float(pts[i, VISIBILITY]) for i in (L_SHOULDER, R_SHOULDER, L_HIP, R_HIP)) < 0.3:
+    if min(float(pts[i, VISIBILITY]) for i in (L_SHOULDER, R_SHOULDER, L_HIP, R_HIP)) < 0.5:
         return None
 
     def xyz(i: int) -> np.ndarray:
@@ -173,24 +206,49 @@ _GROUPS = (
 )
 
 
-def plot_world_landmarks(ax, world: np.ndarray | None, limit: float = 1.0) -> bool:
-    """Redraw `ax` with the 3D skeleton. Returns False if there was nothing to draw.
+def plot_world_landmarks(ax, world: np.ndarray | None, limit: float = 1.0,
+                         min_visibility: float = 0.5) -> bool:
+    """Update the skeleton, hiding uncertain joints. None clears existing artists.
 
     Plotted as (x, z, -y): matplotlib's third axis is up on screen, and +y is DOWN in the pose
     convention, so negating y puts the head at the top. Same mapping the original used.
     """
-    if world is None or world.ndim != 2 or world.shape[0] < 33:
+    if (world is None or world.ndim != 2 or world.shape[0] < 33
+            or world.shape[1] < 4):
+        artists = getattr(ax, "_climbcv_artists", None)
+        if artists is not None:
+            artists["scatter"]._offsets3d = ([], [], [])
+            artists["scatter"].stale = True
+            for line in artists["lines"]:
+                line.set_data_3d([], [], [])
         return False
 
-    xs, ys, zs = world[:, X], world[:, Y], world[:, Z]
+    # NaNs break each polyline at an unreliable joint. Removing those rows would
+    # incorrectly connect the visible joints on either side of the hidden one.
+    coords = world[:33, [X, Z, Y]].astype(float, copy=True)
+    coords[:, 2] *= -1
+    visible = (world[:33, VISIBILITY] >= min_visibility) & np.isfinite(coords).all(axis=1)
+    coords[~visible] = np.nan
+    face = coords[_FACE][visible[_FACE]]
 
-    ax.cla()
-    ax.set_xlim3d(-limit, limit)
-    ax.set_ylim3d(-limit, limit)
-    ax.set_zlim3d(-limit, limit)
+    if not hasattr(ax, "_climbcv_artists"):
+        ax.set_xlim3d(-limit, limit)
+        ax.set_ylim3d(-limit, limit)
+        ax.set_zlim3d(-limit, limit)
 
-    ax.scatter([xs[i] for i in _FACE], [zs[i] for i in _FACE], [-ys[i] for i in _FACE])
-    for group in _GROUPS:
-        ax.plot([xs[i] for i in group], [zs[i] for i in group], [-ys[i] for i in group],
-                alpha=0.5)
-    return True
+        scatter = ax.scatter(*face.T)
+
+        lines = []
+        for group in _GROUPS:
+            line, = ax.plot(*coords[group].T, alpha=0.5)
+            lines.append(line)
+
+        ax._climbcv_artists = {"scatter": scatter, "lines": lines}
+    else:
+        artists = ax._climbcv_artists
+        artists["scatter"]._offsets3d = tuple(face.T)
+        artists["scatter"].stale = True
+        for line, group in zip(artists["lines"], _GROUPS):
+            line.set_data_3d(*coords[group].T)
+
+    return bool(visible.any())

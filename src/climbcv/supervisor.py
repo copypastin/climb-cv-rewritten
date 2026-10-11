@@ -17,9 +17,10 @@ import multiprocessing as mp
 import queue
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .child import (
     CONTRACT_ERROR,
@@ -33,7 +34,7 @@ from .child import (
 )
 from .wiring import HOST, WiringPlan
 
-__all__ = ["Supervisor", "PluginState"]
+__all__ = ["PluginState", "Supervisor"]
 
 log = logging.getLogger("climbcv")
 
@@ -133,6 +134,21 @@ class Supervisor:
         # first and the child dies with `FileNotFoundError` from SemLock._rebuild — an error
         # that names nothing in this codebase and points nowhere near the cause.
         self._queues = self._allocate_queues()
+        
+        from multiprocessing.shared_memory import SharedMemory
+        self._shms: list[SharedMemory] = []
+        for pid, plan in self.plan.plugins.items():
+            if "frame" in plan.publishes:
+                for i in range(4):
+                    name = f"climbcv_{pid}_frame_{i}"
+                    try:
+                        shm = SharedMemory(name=name, create=True, size=8_000_000)
+                    except FileExistsError:
+                        shm = SharedMemory(name=name)
+                        shm.unlink()
+                        shm = SharedMemory(name=name, create=True, size=8_000_000)
+                    self._shms.append(shm)
+                    
         for pid, plan in self.plan.plugins.items():
             if pid == HOST:
                 continue
@@ -153,28 +169,58 @@ class Supervisor:
         for _ in range(200):
             try:
                 self._control.get_nowait()
-            except Exception:
+            except (queue.Empty, OSError, ValueError):
                 break
 
         grace = float(self.framework.get("grace_s", 2.0))
+        shutdown_start = time.monotonic()
+        
         for state in self.states.values():
             proc = state.process
             if proc is None:
                 continue
-            timeout = grace
+            
+            allowed = grace
             manifest_plan = self.plan.plugins.get(state.plugin_id)
             if manifest_plan is not None and manifest_plan.manifest is not None:
-                timeout = max(grace, manifest_plan.manifest.teardown_timeout_s)
-            proc.join(timeout=timeout)
+                allowed = max(grace, manifest_plan.manifest.teardown_timeout_s)
+            
+            remaining = max(0.1, (shutdown_start + allowed) - time.monotonic())
+            proc.join(timeout=remaining)
             if proc.is_alive():
                 log.warning(
                     "%s did not exit within %.1fs; terminating. Its teardown() may not have "
                     "completed — if it writes a file at the end, raise its "
                     "teardown_timeout_s.",
-                    state.plugin_id, timeout,
+                    state.plugin_id, allowed,
                 )
                 proc.terminate()
                 proc.join(timeout=1.0)
+                
+        # Signal and join the logging thread
+        if getattr(self, "_log_queue", None) is not None:
+            try:
+                self._log_queue.put_nowait(None)
+                if hasattr(self, "_log_thread") and self._log_thread.is_alive():
+                    self._log_thread.join(timeout=1.0)
+            except Exception:
+                pass
+                
+        # Close all data queues to release shared memory semaphores
+        if hasattr(self, "_queues"):
+            for q in self._queues.values():
+                try:
+                    q.close()
+                except Exception:
+                    pass
+                    
+        # Unlink shared memory
+        if hasattr(self, "_shms"):
+            for shm in self._shms:
+                try:
+                    shm.unlink()
+                except Exception:
+                    pass
 
         with Supervisor._running_lock:
             if Supervisor._running is self:
@@ -184,7 +230,7 @@ class Supervisor:
         self.start()
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.stop()
 
     # ---------------------------------------------------------------- queues
@@ -260,27 +306,60 @@ class Supervisor:
         handed callbacks from a framework thread they know nothing about.
         """
         deadline = time.monotonic() + timeout
+        
         while True:
-            remaining = deadline - time.monotonic()
-            try:
-                if remaining > 0:
-                    pid, kind, detail = self._control.get(timeout=remaining)
-                else:
-                    pid, kind, detail = self._control.get_nowait()
-            except (queue.Empty, OSError):
-                break
-            self._handle_control(pid, kind, detail)
-            if time.monotonic() >= deadline:
-                break
-
-        for topic, q in self._host_inbox.items():
+            did_work = False
+            
+            # Drain control queue non-blocking
             while True:
                 try:
-                    meta, payload = q.get_nowait()
-                except (queue.Empty, OSError):
+                    pid, kind, detail = self._control.get_nowait()
+                    did_work = True
+                    self._handle_control(pid, kind, detail)
+                except (queue.Empty, OSError, ValueError):
                     break
-                for fn in self._host_callbacks.get(topic, ()):
-                    fn(payload, meta)
+            
+            # Drain data queues non-blocking
+            for topic, q in self._host_inbox.items():
+                while True:
+                    try:
+                        meta, payload = q.get_nowait()
+                        did_work = True
+                        
+                        from .contracts import Frame, FrameRef
+                        if isinstance(payload, FrameRef):
+                            try:
+                                from multiprocessing.shared_memory import SharedMemory
+                                import numpy as np
+                                shm = SharedMemory(name=payload.shm_name)
+                                ndarray = np.ndarray(payload.shape, dtype=np.uint8, buffer=shm.buf)
+                                pixels = ndarray.copy()
+                                shm.close()
+                                payload = Frame(
+                                    seq=payload.seq,
+                                    t_capture_ns=payload.t_capture_ns,
+                                    pixels=pixels,
+                                    color=payload.color,
+                                    mirrored=payload.mirrored,
+                                    source=payload.source
+                                )
+                            except Exception as e:
+                                log.warning("Failed to read frame from shared memory: %s", e)
+                                continue
+
+                        for fn in self._host_callbacks.get(topic, ()):
+                            fn(payload, meta)
+                    except (queue.Empty, OSError, ValueError):
+                        break
+
+            now = time.monotonic()
+            if did_work or now >= deadline:
+                break
+                
+            # If nothing was ready and we have budget left, sleep very briefly
+            # so we don't spin 100% CPU, but remain responsive to whichever arrives first.
+            sleep_budget = deadline - now
+            time.sleep(min(sleep_budget, 0.001))
 
         self._reap_dead()
 

@@ -13,18 +13,16 @@ from __future__ import annotations
 
 import importlib
 import logging
-import os
 import logging.handlers
-import queue
+import os
 import sys
 import threading
 import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .contracts import Meta
 from .plugin import (
     Finished,
     PluginContractError,
@@ -32,8 +30,9 @@ from .plugin import (
     check_contract,
     collect_handlers,
 )
+from .runtime import _HEARTBEAT_INTERVAL_S, _drain, _Runtime, _timeout_until
 
-__all__ = ["ChildSpec", "child_main", "READY", "CRASHED", "FINISHED", "UNAVAILABLE", "HEARTBEAT"]
+__all__ = ["CRASHED", "FINISHED", "HEARTBEAT", "READY", "UNAVAILABLE", "ChildSpec", "child_main"]
 
 READY = "ready"
 CRASHED = "crashed"
@@ -42,7 +41,6 @@ UNAVAILABLE = "unavailable"
 HEARTBEAT = "heartbeat"
 CONTRACT_ERROR = "contract_error"
 
-_HEARTBEAT_INTERVAL_S = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,97 +66,6 @@ class ChildSpec:
     teardown_timeout_s: float
 
 
-class _Runtime:
-    """The object behind every `self.x` on a Plugin. Lives only in the child."""
-
-    def __init__(
-        self,
-        spec: ChildSpec,
-        out_queues: dict[str, list[Any]],
-        control: Any,
-        shutdown_event: Any,
-        log: logging.Logger,
-    ) -> None:
-        self.spec = spec
-        self.config = dict(spec.config)
-        self.config_dir = spec.config_dir
-        self.data_dir = spec.data_dir
-        self.log = log
-        self._out = out_queues
-        self._control = control
-        self._shutdown = shutdown_event
-        self._seq: dict[str, int] = {t: 0 for t in spec.publishes}
-        self._latest: dict[str, Any] = {}
-        self._latest_by_source: dict[str, dict[str, Any]] = {}
-        self._intervals: dict[str, float] = {}
-        self._declared = set(spec.publishes)
-        self._subscribed = {s[0] for s in spec.subscriptions}
-
-    # -- the property that has to be a property (guardian-02 finding 4) ----------------
-    @property
-    def stopping(self) -> bool:
-        """Backed by the shared shutdown Event, so it flips DURING a blocking handler.
-
-        A plain bool cannot: this process is single-threaded, so the only code that could
-        reassign it is the loop that is currently inside the handler asking.
-        """
-        return self._shutdown.is_set()
-
-    def publish(self, topic: str, payload: Any) -> None:
-        if topic not in self._declared:
-            raise PluginContractError(
-                f"{self.spec.plugin_id} published {topic!r}, which it does not declare.\n\n"
-                "Add it to the manifest so the framework can wire it — it builds the graph "
-                "from manifests and never imports your code to find out:\n\n"
-                "    [[publishes]]\n"
-                f'    topic = "{topic}"\n\n'
-                f"Declared: {sorted(self._declared) or 'nothing'}"
-            )
-        meta = Meta(
-            topic=topic,
-            source=self.spec.plugin_id,
-            seq=self._seq[topic],
-            t_publish_ns=time.monotonic_ns(),
-        )
-        self._seq[topic] += 1
-        for q in self._out.get(topic, ()):
-            try:
-                q.put_nowait((meta, payload))
-            except queue.Full:
-                # Drop the OLDEST, not the newest. A conflating stream means "the latest value
-                # wins", so discarding the message we are holding would keep stale frames and
-                # throw away fresh ones -- the exact opposite of the intent, and invisible
-                # except as mysterious latency. Never block the publisher either way.
-                try:
-                    q.get_nowait()
-                    q.put_nowait((meta, payload))
-                except (queue.Empty, queue.Full):
-                    pass
-
-    def latest(self, topic: str) -> Any | None:
-        self._check_subscribed(topic, "latest")
-        return self._latest.get(topic)
-
-    def latest_by_source(self, topic: str) -> dict[str, Any]:
-        self._check_subscribed(topic, "latest_by_source")
-        return dict(self._latest_by_source.get(topic, {}))
-
-    def _check_subscribed(self, topic: str, what: str) -> None:
-        if topic not in self._subscribed:
-            raise PluginContractError(
-                f"{self.spec.plugin_id} called {what}({topic!r}) but does not subscribe to "
-                f"it, so nothing is ever delivered and this would return empty forever.\n\n"
-                "    [[subscribes]]\n"
-                f'    topic = "{topic}"\n'
-                '    mode  = "latest"     # "I read this with latest(), not a handler"\n\n'
-                f"Subscribed: {sorted(self._subscribed) or 'nothing'}"
-            )
-
-    def set_interval(self, handler: Callable | str, seconds: float) -> None:
-        name = handler if isinstance(handler, str) else handler.__name__
-        if seconds < 0:
-            raise PluginContractError(f"set_interval({name!r}, {seconds}) must be >= 0")
-        self._intervals[name] = float(seconds)
 
 
 def _send(control: Any, plugin_id: str, kind: str, detail: str = "") -> None:
@@ -298,21 +205,32 @@ def child_main(
     # doing exactly what it is supposed to, and the supervisor would report it stalled while it
     # was perfectly healthy. Verified: core.capture tripped the stall warning on its first run.
     # This does not leak concurrency into the authoring model: no author writes or sees it.
+    _active = {"task": "", "start": 0.0}
+
     def _beat() -> None:
-        # POLL is_set(), never wait(). A child that calls Event.wait() registers itself as a
-        # sleeper on the shared multiprocessing Condition; if the supervisor then has to
-        # terminate that child, the host's own Event.set() blocks forever inside notify_all(),
-        # waiting for an acknowledgement from a process that no longer exists. That deadlocks
-        # the supervisor -- the one process whose survival everything depends on -- and it was
-        # reproducible here: `stop()` hung in synchronize.py notify() with four plugins gone.
-        # is_set() takes the lock only momentarily and never registers as a waiter.
+        # POLL is_set(), never wait().
         while not shutdown_event.is_set():
             time.sleep(_HEARTBEAT_INTERVAL_S)
             if shutdown_event.is_set():
                 return
-            _send(control, spec.plugin_id, HEARTBEAT)
+            
+            task = _active["task"]
+            if task:
+                dur = time.monotonic() - _active["start"]
+                _send(control, spec.plugin_id, "PROGRESS", f"{task} ({dur:.1f}s)")
+            else:
+                _send(control, spec.plugin_id, HEARTBEAT)
 
     threading.Thread(target=_beat, name=f"beat-{spec.plugin_id}", daemon=True).start()
+
+    # We patch the runtime and ourselves so we can record task boundaries
+    def _run_with_tracking(name: str, fn: Callable) -> None:
+        _active["task"] = name
+        _active["start"] = time.monotonic()
+        try:
+            fn()
+        finally:
+            _active["task"] = ""
 
     intervals = {fn.__name__: sec for fn, sec in timers}
     intervals.update(rt._intervals)
@@ -322,18 +240,27 @@ def child_main(
     try:
         while not shutdown_event.is_set():
             now = time.monotonic()
+            
+            # Apply any dynamic interval changes made by the plugin at runtime
+            for name, sec in rt._intervals.items():
+                if intervals.get(name) != sec:
+                    intervals[name] = sec
+                    if name not in next_due:
+                        next_due[name] = now
+
             # A zero-interval timer is a source: run it flat out and do not sleep.
             hot = any(intervals[n] == 0.0 for n in intervals)
             timeout = 0.0 if hot else _timeout_until(next_due, intervals, now)
 
-            drained = _drain(in_queues, handlers_by_topic, instance, rt, timeout)
+            drained = _drain(in_queues, handlers_by_topic, instance, rt, timeout, _run_with_tracking)
 
             now = time.monotonic()
             for name, interval in list(intervals.items()):
                 if now < next_due.get(name, 0.0):
                     continue
                 fn = getattr(instance, name)
-                fn()
+                _run_with_tracking(f"timer {name}", fn)
+                
                 # Measured from RETURN, and missed ticks are dropped rather than queued: a
                 # handler that overruns its interval falls behind instead of accumulating a
                 # backlog it can never work off.
@@ -360,45 +287,4 @@ def child_main(
     _send(control, spec.plugin_id, exit_kind, exit_detail)
 
 
-def _timeout_until(next_due: dict[str, float], intervals: dict[str, float], now: float) -> float:
-    if not next_due:
-        # A plugin with inputs but no timers must still wake to send its heartbeat, or the
-        # supervisor reports it stalled while it is perfectly healthy and merely idle.
-        return _HEARTBEAT_INTERVAL_S / 2
-    soonest = min(next_due.values())
-    return max(0.0, min(soonest - now, _HEARTBEAT_INTERVAL_S / 2))
 
-
-def _drain(
-    in_queues: dict[str, Any],
-    handlers_by_topic: dict[str, list[Callable]],
-    instance: Any,
-    rt: _Runtime,
-    timeout: float,
-) -> bool:
-    """One pass over the inbound queues. Returns whether anything was handled.
-
-    latest() is populated for everything drained BEFORE any handler runs, so a handler
-    reading latest() of another topic sees this cycle's value rather than one a frame stale.
-    """
-    batch: list[tuple[str, Meta, Any]] = []
-    first = True
-    for topic, q in in_queues.items():
-        while True:
-            try:
-                item = q.get(timeout=timeout) if first and timeout > 0 else q.get_nowait()
-            except (queue.Empty, OSError):
-                break
-            first = False
-            meta, payload = item
-            batch.append((topic, meta, payload))
-        first = False
-
-    for topic, meta, payload in batch:
-        rt._latest[topic] = payload
-        rt._latest_by_source.setdefault(topic, {})[meta.source] = payload
-
-    for topic, meta, payload in batch:
-        for fn in handlers_by_topic.get(topic, ()):
-            fn(instance, payload, meta)
-    return bool(batch)

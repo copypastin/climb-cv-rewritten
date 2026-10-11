@@ -14,12 +14,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.manifest import (  # noqa: E402
+from climbcv.manifest import (
     MANIFEST_FILENAME,
     ManifestError,
     parse_manifest,
 )
-from climbcv.topics import (  # noqa: E402
+from climbcv.topics import (
     STANDARD_TOPICS,
     Exclusivity,
     Kind,

@@ -20,12 +20,12 @@ from pathlib import Path
 from .topics import PAYLOAD_NAMES, Exclusivity, Kind, validate_topic_name
 
 __all__ = [
+    "MANIFEST_FILENAME",
+    "Manifest",
     "ManifestError",
     "Publish",
     "Subscribe",
-    "Manifest",
     "parse_manifest",
-    "MANIFEST_FILENAME",
 ]
 
 MANIFEST_FILENAME = "climbcv-plugin.toml"

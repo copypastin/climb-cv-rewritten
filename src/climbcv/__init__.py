@@ -10,12 +10,12 @@ because under `spawn` every child process re-imports it. Payload contracts are i
 from .plugin import Plugin, PluginContractError, every, subscribe
 
 __all__ = [
+    "PLUGIN_API_VERSION",
     "Plugin",
     "PluginContractError",
-    "subscribe",
-    "every",
     "__version__",
-    "PLUGIN_API_VERSION",
+    "every",
+    "subscribe",
 ]
 
 __version__ = "0.1.0.dev0"

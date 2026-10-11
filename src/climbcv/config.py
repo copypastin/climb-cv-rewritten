@@ -21,11 +21,11 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "FRAMEWORK_DEFAULTS",
     "ConfigError",
     "LoadedConfig",
-    "FRAMEWORK_DEFAULTS",
-    "load_config",
     "check_against_plugins",
+    "load_config",
 ]
 
 

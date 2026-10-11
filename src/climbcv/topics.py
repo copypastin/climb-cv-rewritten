@@ -16,13 +16,13 @@ from enum import Enum
 from . import contracts
 
 __all__ = [
-    "Kind",
-    "Exclusivity",
-    "TopicDescriptor",
+    "PAYLOAD_NAMES",
+    "RESERVED_TOPIC_PREFIXES",
     "STANDARD_TOPICS",
     "TOPIC_RE",
-    "RESERVED_TOPIC_PREFIXES",
-    "PAYLOAD_NAMES",
+    "Exclusivity",
+    "Kind",
+    "TopicDescriptor",
     "validate_topic_name",
 ]
 

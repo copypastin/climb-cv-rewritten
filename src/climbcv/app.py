@@ -16,8 +16,9 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import LoadedConfig, check_against_plugins, load_config
 from .loader import discover
@@ -30,14 +31,8 @@ log = logging.getLogger("climbcv")
 
 
 def bundled_root() -> Path:
-    """The plugin root shipped with the distribution.
-
-    Without this, `pip install climb-cv` and run gives no capture, no pose and no smoothing,
-    because those are plugins now — four previously-default features would silently become
-    opt-in. The bundled root also means the manifest parser is exercised on real manifests at
-    every startup rather than being bypassed by synthetic in-code descriptors.
-    """
-    return Path(__file__).resolve().parent / "bundled"
+    """The plugin root shipped with the distribution."""
+    return Path(__file__).resolve().parent.parent / "plugins"
 
 
 class ClimbCV:
@@ -58,6 +53,16 @@ class ClimbCV:
         )
         for warning in self._cfg.warnings:
             log.warning("%s", warning)
+
+        # Internal lifecycle subscription to remain responsive to plugin shutdown requests
+        def _on_shutdown(payload, meta) -> None:
+            log.info("Shutdown requested by %s: %s", meta.source, payload.reason)
+            self.stop()
+
+        self._host_subs.append(
+            Subscription(topic="app.shutdown", conflate=False, depth=10, mode="handler", required=False)
+        )
+        self._callbacks["app.shutdown"] = [_on_shutdown]
 
     # ---------------------------------------------------------------- declarations
 

@@ -7,7 +7,6 @@ in the process that uses it, which is the whole point of Decision #15.
 
 from __future__ import annotations
 
-import time
 import urllib.request
 from pathlib import Path
 
@@ -25,6 +24,14 @@ _TOPOLOGY = "mediapipe.pose.33"
 
 class MediaPipePose(Plugin):
     def setup(self) -> None:
+        import os
+        import pathlib
+        # Store the matplotlib config in a dedicated subdirectory of the framework-managed
+        # data_dir, which is guaranteed to be writable. Using setdefault allows an operator
+        # to override the location via the environment if needed.
+        mpl_cache = pathlib.Path(self.data_dir) / "mpl"
+        mpl_cache.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache))
         try:
             import mediapipe as mp
         except ImportError:
@@ -71,6 +78,7 @@ class MediaPipePose(Plugin):
                 )
                 self._landmarker = vision.PoseLandmarker.create_from_options(options)
                 self.log.info("pose landmarker ready on %s", delegate.name)
+                self._delegate_name = "gpu" if delegate == base.Delegate.GPU else "cpu"
                 break
             except Exception as exc:  # noqa: BLE001 — delegate probing is best-effort
                 last_error = exc
@@ -96,7 +104,7 @@ class MediaPipePose(Plugin):
         if not cached.is_file():
             self.log.info("downloading the pose model to %s (about 5 MB, once)", cached)
             try:
-                urllib.request.urlretrieve(_MODEL_URL, cached)  # noqa: S310
+                urllib.request.urlretrieve(_MODEL_URL, cached)
             except Exception as exc:  # noqa: BLE001
                 self.unavailable(
                     f"could not download the pose model ({exc}). Set a local file instead:\n"
@@ -112,9 +120,18 @@ class MediaPipePose(Plugin):
         ts_ms = max(frame.t_capture_ns // 1_000_000, self._last_ts_ms + 1)
         self._last_ts_ms = ts_ms
 
-        image = self._mp.Image(
-            image_format=self._mp.ImageFormat.SRGB, data=frame.as_rgb()
-        )
+        pixels = frame.pixels if frame.color == "rgb" else frame.as_rgb()
+        
+        # On macOS, the GPU delegate (Metal) aborts internally if fed SRGB (format 1).
+        # It requires SRGBA (format 2).
+        if getattr(self, "_delegate_name", "cpu") == "gpu":
+            import cv2
+            pixels = cv2.cvtColor(pixels, cv2.COLOR_RGB2RGBA)
+            fmt = self._mp.ImageFormat.SRGBA
+        else:
+            fmt = self._mp.ImageFormat.SRGB
+            
+        image = self._mp.Image(image_format=fmt, data=pixels)
         result = self._landmarker.detect_for_video(image, ts_ms)
         if not result.pose_world_landmarks:
             return  # no estimate is not an error, and publishing NaNs would poison every
@@ -143,9 +160,9 @@ class MediaPipePose(Plugin):
 
 def _to_array(landmarks) -> np.ndarray:
     """(visibility, x, y, z) per landmark, float32 — the column order the contract states."""
-    out = np.empty((len(landmarks), 4), dtype=np.float32)
-    for i, lm in enumerate(landmarks):
-        out[i] = (
-            getattr(lm, "visibility", 1.0), lm.x, lm.y, lm.z,
-        )
+    data = [
+        (getattr(lm, "visibility", 1.0), lm.x, lm.y, lm.z)
+        for lm in landmarks
+    ]
+    out = np.array(data, dtype=np.float32)
     return np.nan_to_num(out, copy=False, nan=0.0, posinf=0.0, neginf=0.0)

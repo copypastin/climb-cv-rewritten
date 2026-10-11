@@ -21,10 +21,12 @@ from climbcv.contracts import Frame
 
 class Capture(Plugin):
     def setup(self) -> None:
+        """Open the capture device or file and configure resolution, fps, and color options."""
         source = self.config.get("source")
         device = self.config.get("device", 0)
         self._loop = bool(self.config.get("loop", False))
         self._mirror = bool(self.config.get("mirror", True))
+        self._rgb = bool(self.config.get("rgb", True))
         self._is_file = bool(source)
         self._seq = 0
         # The fps cap PACES a file, which reads instantly. It must NOT pace a camera: a camera
@@ -78,11 +80,11 @@ class Capture(Plugin):
             # this one says 15 fps and delivers about 30, so trusting the report halves the
             # frame rate. `fps` remains available as an explicit cap when you want one.
 
-        w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         device_fps = self._cap.get(cv2.CAP_PROP_FPS) or 0.0
         self.log.info(
-            "capturing %s at %dx%d%s", self._label, w, h,
+            "capturing %s at %dx%d%s", self._label, width, height,
             f", device reports {device_fps:.0f} fps" if device_fps else "",
         )
         self._t0 = time.monotonic()
@@ -99,8 +101,8 @@ class Capture(Plugin):
         interval = (1.0 / self._fps_cap) if self._fps_cap else 0.0
         next_at = time.monotonic()
         while not self.stopping:
-            ok, frame = self._cap.read()
-            if not ok:
+            success, frame = self._cap.read()
+            if not success:
                 if self._loop and self.config.get("source"):
                     self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
@@ -111,16 +113,28 @@ class Capture(Plugin):
                 return
 
             t_capture_ns = time.monotonic_ns()
-            if self._mirror:
-                frame = cv2.flip(frame, 1)
 
+            # Combine mirror and color-space in a single numpy stride operation to avoid
+            # creating two intermediate arrays. ::-1 on axis=1 flips horizontally (mirror),
+            # ::-1 on axis=2 reverses channel order (BGR→RGB). np.ascontiguousarray makes
+            # the result a proper contiguous array ready for downstream consumers.
+            if self._mirror and self._rgb:
+                frame = np.ascontiguousarray(frame[:, ::-1, ::-1])
+                color = "rgb"
+            elif self._mirror:
+                frame = np.ascontiguousarray(frame[:, ::-1, :])
+                color = "bgr"
+            elif self._rgb:
+                frame = np.ascontiguousarray(frame[:, :, ::-1])
+                color = "rgb"
+            else:
+                frame = np.ascontiguousarray(frame)
+                color = "bgr"
             # Pace AFTER the read, never before it. A camera whose read() blocks needs no
-            # pacing and gets none, because the deadline has already passed by the time we
-            # arrive here. A camera that returns duplicates immediately -- which is what a
-            # 15 fps device does when asked for frames faster than it has them -- would
-            # otherwise spin flat out, burning a core and flooding every subscriber's queue
-            # with redundant frames. Sleeping BEFORE the read was the earlier bug: it added
-            # its wait to the device's own, halving the rate.
+            # pacing and gets none because the deadline has already passed. A camera that
+            # returns duplicates immediately would otherwise spin flat out, burning a core and
+            # flooding subscribers. Sleeping BEFORE the read added its wait to the device's
+            # own, halving the rate.
             if interval:
                 now = time.monotonic()
                 if now < next_at:
@@ -147,13 +161,14 @@ class Capture(Plugin):
             self.publish("frame", Frame(
                 seq=self._seq,
                 t_capture_ns=t_capture_ns,
-                pixels=np.ascontiguousarray(frame),
-                color="bgr",
+                pixels=frame,
+                color=color,
                 mirrored=self._mirror,
                 source=self._label,
             ))
 
     def teardown(self) -> None:
+        """Release the capture device on shutdown."""
         cap = getattr(self, "_cap", None)
         if cap is not None:
             cap.release()

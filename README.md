@@ -16,7 +16,7 @@ python3 examples/02_live_webcam.py                         # the same, on a came
 ```
 
 - **Framework**: topic broker, manifest/loader, process-per-plugin isolation, crash containment,
-  the plugin API, and the `ClimbCV` embedding API. 212 tests, all passing in about 4 seconds.
+  the plugin API, and the `ClimbCV` embedding API. 232 tests, all passing in about 4 seconds.
 - **First-party plugins**: `core.capture`, `core.pose_mediapipe`, `core.smooth_oneeuro`.
 - **Examples**: five plugins including a live exo-skeleton overlay and a matplotlib 3D view.
 
@@ -52,16 +52,19 @@ must stash on the handler and draw on a tick.
 
 ## architecture at face value
 
-Plugins publish and subscribe to **topics**. A topic is **exclusive** when its payload is a **singleton** observation of a unique subject — two publishers would contradict each other, as with one climber's skeleton — and **shared** when publishers merely add, as with hold boxes from two detectors. That single distinction is what collapses "replace a core stage" and "add a new stage" into the same mechanism: swapping the pose model is pointing an exclusive topic at a different plugin, and nothing downstream knows. Every plugin runs in its own process, so a crash is contained and no author writes a `Queue`.
+Plugins publish and subscribe to **topics**. A topic is **exclusive** when its payload is a **singleton** observation of a unique subject — two publishers would contradict each other, as with one climber's skeleton — and **shared** when publishers merely add, as with hold boxes from two detectors. That single distinction is what collapses "replace a core stage" and "add a new stage" into the same mechanism: swapping the pose model is pointing an exclusive topic at a different plugin, and nothing downstream knows. Every plugin runs in its own process, so a crash is contained and no author writes a `Queue`. 
+
+*Note: As of the recent refactoring, data flows between processes via un-conflated queues with non-blocking checks to ensure responsive ~30FPS real-time delivery.*
 
 ## layout
 
 ```
-src/climbcv/          the framework, plus bundled first-party plugins
+src/climbcv/          the framework core (supervisor, runtime, contracts, loader)
+src/plugins/          bundled first-party plugins (capture, pose, smoothing)
 examples/             runnable examples and five example plugins
 design/               section-by-section design docs and two API reviews
 BRAINSTORM.md         the Decision Log — every architectural decision and what it rejected
-tests/                212 tests; `pytest -m e2e` adds the slow pipeline test
+tests/                232 tests; `pytest -m e2e` adds the slow pipeline test
 ```
 
 `BRAINSTORM.md` and `design/` are worth reading before changing anything in `src/climbcv/`. The

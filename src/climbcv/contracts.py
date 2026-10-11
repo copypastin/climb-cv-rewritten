@@ -16,16 +16,16 @@ from typing import Any, ClassVar
 import numpy as np
 
 __all__ = [
-    "Meta",
+    "STATUS_STATES",
+    "TOPOLOGY_SIZES",
     "Frame",
-    "PoseFrame",
     "HoldBoxes",
+    "Meta",
+    "PoseFrame",
+    "Record",
     "Scalar",
     "Shutdown",
     "Status",
-    "Record",
-    "STATUS_STATES",
-    "TOPOLOGY_SIZES",
 ]
 
 
@@ -214,6 +214,19 @@ class Frame(_Arrays):
         if self.color == "bgr" or self.color == "gray":
             return self.pixels.copy()
         return np.ascontiguousarray(self.pixels[..., ::-1])
+
+
+@dataclass(frozen=True, slots=True)
+class FrameRef:
+    """Internal pointer to a Frame in shared memory. Never seen by plugins."""
+    seq: int
+    t_capture_ns: int
+    color: str
+    mirrored: bool
+    source: str
+    shape: tuple[int, int, int]
+    shm_name: str
+
 
 
 @payload

@@ -12,16 +12,17 @@ child process, and no author writes a Process, Queue, Lock, Event or pickle call
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 __all__ = [
-    "Plugin",
-    "PluginContractError",
-    "subscribe",
-    "every",
     "RESERVED_NAMES",
     "Finished",
+    "Plugin",
+    "PluginContractError",
     "Unavailable",
+    "every",
+    "subscribe",
 ]
 
 

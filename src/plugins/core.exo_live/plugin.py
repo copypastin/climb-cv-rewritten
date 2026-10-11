@@ -20,9 +20,11 @@ from __future__ import annotations
 import time
 
 import cv2
+import numpy as np
+
 from climbcv import Plugin, every, subscribe
 from climbcv.contracts import Shutdown
-from climbcv.rendering import draw_body_tilt, draw_pose_overlay
+from climbcv.rendering import draw_body_tilt, draw_pose_overlay, match_pose_frame
 
 _SKELETON = (66, 245, 158)   # BGR
 _JOINT = (255, 210, 60)
@@ -40,6 +42,9 @@ class ExoLive(Plugin):
         self._radius = int(self.config.get("point_radius", 3))
         self._thickness = int(self.config.get("line_width", 2))
         self._show_fps = bool(self.config.get("show_fps", True))
+        self._max_pose_age_ms = float(self.config.get("max_pose_age_ms", 250))
+        if not 0 < self._max_pose_age_ms < float("inf"):
+            raise ValueError("max_pose_age_ms must be positive and finite")
 
         self._frame = None
         self._drawn = 0
@@ -60,27 +65,61 @@ class ExoLive(Plugin):
 
     @subscribe("frame")
     def on_frame(self, frame, meta) -> None:
-        # Stash only. Never draw here: see the module docstring.
-        self._frame = frame
+        # Stash in a small ring buffer so we can synchronize video to the pose
+        if not hasattr(self, "_frames"):
+            self._frames = {}
+        self._frames[frame.seq] = frame
+        if len(self._frames) > 30:
+            del self._frames[min(self._frames.keys())]
+        self._latest_frame = frame
 
     @every(1 / 60)
     def draw(self) -> None:
-        frame = self._frame
-        if frame is None:
+        if not hasattr(self, "_latest_frame"):
+            # Still pump the window to keep the OS happy
+            if (cv2.waitKey(1) & 0xFF) == 27:
+                self.publish("app.shutdown", Shutdown("ESC pressed in the overlay window"))
             return
-        pose = self.latest("pose.smoothed")
 
-        # as_bgr() always returns a fresh writable C-contiguous array, so drawing into it is
-        # safe. frame.pixels itself is read-only and shared with nothing.
-        canvas = frame.as_bgr()
+        frame, pose = match_pose_frame(
+            self._latest_frame, self._frames, self.latest("pose.raw"),
+            self._max_pose_age_ms,
+        )
+
+        lid = self.latest("device.lid_angle")
+
+        # Only redraw if the visual inputs have actually changed
+        pose_seq = pose.frame_seq if pose else -1
+        lid_time = lid.t_ns if lid else -1
+        draw_state = (frame.seq, frame.t_capture_ns, pose_seq, lid_time)
+        if getattr(self, "_last_drawn_state", None) == draw_state:
+            # Same inputs. Just pump the GUI and return.
+            if (cv2.waitKey(1) & 0xFF) == 27:
+                self.publish("app.shutdown", Shutdown("ESC pressed in the overlay window"))
+            return
+
+        self._last_drawn_state = draw_state
+
+        # Fast OpenCV color conversion into a persistent buffer rather than numpy slicing
+        if not hasattr(self, "_canvas") or self._canvas.shape != frame.pixels.shape:
+            self._canvas = np.empty_like(frame.pixels)
+
+        if frame.color == "rgb":
+            cv2.cvtColor(frame.pixels, cv2.COLOR_RGB2BGR, dst=self._canvas)
+        else:
+            np.copyto(self._canvas, frame.pixels)
+
+        canvas = self._canvas
+
         if self._scale != 1.0:
+            # If scaling, we can't reuse the buffer for the destination easily, so let it allocate
             canvas = cv2.resize(canvas, None, fx=self._scale, fy=self._scale)
 
         # One MediaPipe call, as the original did, rather than a Python loop over edges.
         if not draw_pose_overlay(canvas, pose):
             cv2.putText(canvas, "no pose", (12, canvas.shape[0] - 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, _TEXT, 1, cv2.LINE_AA)
-        lid = self.latest("device.lid_angle")
+
         draw_body_tilt(canvas, pose, lid.value if lid is not None else None)
 
         self._draw_hud(canvas, frame, pose, canvas.shape[1])
@@ -91,6 +130,11 @@ class ExoLive(Plugin):
         if (cv2.waitKey(1) & 0xFF) == 27:
             self.log.info("ESC pressed — asking the run to stop")
             self.publish("app.shutdown", Shutdown("ESC pressed in the overlay window"))
+        try:
+            if cv2.getWindowProperty(self._window, cv2.WND_PROP_VISIBLE) < 1:
+                self.publish("app.shutdown", Shutdown("Overlay window closed by user"))
+        except cv2.error:
+            self.publish("app.shutdown", Shutdown("Overlay window closed by user"))
 
         self._drawn += 1
         now = time.monotonic()

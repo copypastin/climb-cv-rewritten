@@ -1,0 +1,23 @@
+[plugin]
+id                = "math.center_of_mass"
+version           = "1.0.0"
+api_version       = "1.0"
+entry             = "plugin:CenterOfMass"
+name              = "Center of Mass Calculator"
+description       = "Calculates the 3D Center of Mass of the climber using biological weight distributions."
+author            = "climb-cv"
+requires_topology = "mediapipe.pose.33"
+
+[[subscribes]]
+topic = "pose.smoothed"
+
+[[publishes]]
+topic = "metrics.com"
+kind = "stream"
+exclusivity = "shared"
+payload = "record"
+record_kind = "math.com/1"
+doc = "The 3D Center of Mass calculation"
+
+[config]
+keys = []

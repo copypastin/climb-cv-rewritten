@@ -22,4 +22,4 @@ topic = "pose.smoothed"
 topic = "pose.raw"
 
 [config]
-keys = ["freq", "min_cutoff", "beta", "d_cutoff", "passthrough"]
+keys = ["freq", "min_cutoff", "beta", "d_cutoff", "passthrough", "reset_after_ms"]

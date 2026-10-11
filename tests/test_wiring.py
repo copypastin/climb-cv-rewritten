@@ -14,11 +14,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.config import load_config  # noqa: E402
-from climbcv.loader import Discovery  # noqa: E402
-from climbcv.manifest import Manifest, Publish, Subscribe  # noqa: E402
-from climbcv.topics import Exclusivity, Kind  # noqa: E402
-from climbcv.wiring import HOST, Subscription, WiringError, resolve  # noqa: E402
+from climbcv.config import load_config
+from climbcv.loader import Discovery
+from climbcv.manifest import Manifest, Publish, Subscribe
+from climbcv.topics import Exclusivity, Kind
+from climbcv.wiring import HOST, Subscription, WiringError, resolve
 
 
 def mf(pid, *, publishes=(), subscribes=(), provides=(), requires=None, root="user") -> Manifest:
@@ -296,9 +296,8 @@ def test_widening_exclusivity_via_config_warns_about_the_delivery_contract():
 # ---------------------------------------------------------------- queue depths
 
 
-def test_depth_scales_with_subscription_count_not_a_constant():
-    """A constant depth lets a 30fps frame burst evict another topic's pending message
-    before its handler ever runs."""
+def test_depth_defaults_to_four_for_conflating_streams():
+    """A conflating stream defaults to 4 slots to buffer bursts without scaling quadratically."""
     many = resolve(
         disc(
             mf("cap", publishes=PUB_FRAME),
@@ -310,9 +309,9 @@ def test_depth_scales_with_subscription_count_not_a_constant():
         ),
         cfg(),
     )
-    assert many.plugins["busy"].stream_depth == 6
+    assert many.plugins["busy"].stream_depth == 4
     few = resolve(disc(mf("cap", publishes=PUB_FRAME), mf("one", subscribes=SUB_FRAME)), cfg())
-    assert few.plugins["one"].stream_depth == 4, "floor of 4"
+    assert few.plugins["one"].stream_depth == 4
 
 
 def test_nonconflating_subscription_gets_its_own_depth():

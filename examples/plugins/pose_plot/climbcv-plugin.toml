@@ -15,4 +15,4 @@ heartbeat_warn_s = 25.0
 topic = "pose.smoothed"
 
 [config]
-keys = ["redraw_hz", "elev", "azim", "limit_m", "trail"]
+keys = ["redraw_hz", "elev", "azim", "limit_m", "trail", "max_pose_age_ms", "min_visibility"]

@@ -14,6 +14,7 @@ import difflib
 from dataclasses import dataclass, field
 
 from .config import LoadedConfig
+from .contracts import PoseFrame
 from .loader import Discovery
 from .manifest import Manifest, Publish, Subscribe
 from .topics import (
@@ -23,9 +24,8 @@ from .topics import (
     Kind,
     TopicDescriptor,
 )
-from .contracts import PoseFrame
 
-__all__ = ["WiringError", "Subscription", "PluginPlan", "WiringPlan", "resolve", "HOST"]
+__all__ = ["HOST", "PluginPlan", "Subscription", "WiringError", "WiringPlan", "resolve"]
 
 HOST = "<host>"
 
@@ -396,23 +396,24 @@ def resolve(
 
     def build(pid: str, manifest: Manifest | None,
               subs: list[Subscribe | Subscription]) -> PluginPlan:
-        stream_subs = sum(
-            1 for s in subs
-            if descriptors[s.topic].kind is Kind.STREAM and getattr(s, "conflate", True)
-        )
-        if configured > 0:
-            depth = min(configured, max_depth)
-        else:
-            # Scales with subscription count: a constant depth lets a 30fps `frame` burst
-            # evict another topic's pending message before its handler ever runs.
-            depth = min(max(_MIN_STREAM_DEPTH, 2 * stream_subs), max_depth)
+        
+        def _get_depth(s: Subscribe | Subscription) -> int:
+            if configured > 0:
+                return min(configured, max_depth)
+                
+            conflating = getattr(s, "conflate", True)
+            if not conflating:
+                return min(getattr(s, "depth", 0) or _DEFAULT_NONCONFLATING_DEPTH, max_depth)
+                
+            # For a conflating stream, 4 slots is enough to buffer a burst without
+            # delaying delivery or growing total queue capacity quadratically.
+            return min(4, max_depth)
+
         wired = tuple(
             Subscription(
                 topic=s.topic,
                 conflate=getattr(s, "conflate", True),
-                depth=min(
-                    getattr(s, "depth", 0) or _DEFAULT_NONCONFLATING_DEPTH, max_depth
-                ) if not getattr(s, "conflate", True) else depth,
+                depth=_get_depth(s),
                 mode=getattr(s, "mode", "handler"),
                 required=s.required,
             )
@@ -426,7 +427,7 @@ def resolve(
                 p.topic for p in (manifest.publishes if manifest else ())
             ) if manifest else tuple(host_publishes),
             subscribes=wired,
-            stream_depth=depth,
+            stream_depth=min(configured, max_depth) if configured > 0 else min(4, max_depth),
             provides_topology=resolved_topology.get(pid),
             config=cfg.section(pid),
         )

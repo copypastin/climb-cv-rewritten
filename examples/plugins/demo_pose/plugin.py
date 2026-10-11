@@ -72,17 +72,24 @@ class DemoPose(Plugin):
         place(L_ANKLE, 0.43, 0.90 - swing * 0.3)
         place(R_ANKLE, 0.57, 0.90 + swing * 0.3)
 
-        # Face and hand/foot detail points: cluster them near their anchors so the drawn
-        # skeleton looks complete rather than having floating stray joints at the origin.
-        for i in range(1, 11):
-            img[i, 1:] = img[NOSE, 1:] + np.float32(
-                [0.02 * math.cos(i), 0.015 * math.sin(i), 0.0]
-            )
-        for i, anchor in ((17, L_WRIST), (18, R_WRIST), (19, L_WRIST),
-                          (20, R_WRIST), (21, L_WRIST), (22, R_WRIST)):
-            img[i, 1:] = img[anchor, 1:]
-        for i, anchor in ((29, L_ANKLE), (30, R_ANKLE), (31, L_ANKLE), (32, R_ANKLE)):
-            img[i, 1:] = img[anchor, 1:]
+        # Face detail points: cluster them around the nose using trig offsets.
+        face_indices = np.arange(1, 11)
+        face_offsets = np.column_stack((
+            0.02 * np.cos(face_indices.astype(np.float32)),
+            0.015 * np.sin(face_indices.astype(np.float32)),
+            np.zeros(10, dtype=np.float32),
+        ))
+        img[1:11, 1:] = img[NOSE, 1:] + face_offsets
+
+        # Hand detail points: cluster each finger near the appropriate wrist.
+        wrist_idx = np.array([17, 18, 19, 20, 21, 22])
+        wrist_anchors = np.array([L_WRIST, R_WRIST, L_WRIST, R_WRIST, L_WRIST, R_WRIST])
+        img[wrist_idx, 1:] = img[wrist_anchors, 1:]
+
+        # Foot detail points: cluster near the appropriate ankle.
+        ankle_idx = np.array([29, 30, 31, 32])
+        ankle_anchors = np.array([L_ANKLE, R_ANKLE, L_ANKLE, R_ANKLE])
+        img[ankle_idx, 1:] = img[ankle_anchors, 1:]
 
         # World coordinates: METRES, origin at the hip midpoint, +x image-right, +y DOWN.
         # Derive them from the image points so the two views agree, which is what a real pose

@@ -17,11 +17,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.config import load_config  # noqa: E402
-from climbcv.loader import discover  # noqa: E402
-from climbcv.manifest import MANIFEST_FILENAME  # noqa: E402
-from climbcv.supervisor import Supervisor  # noqa: E402
-from climbcv.wiring import resolve  # noqa: E402
+from climbcv.config import load_config
+from climbcv.loader import discover
+from climbcv.manifest import MANIFEST_FILENAME
+from climbcv.supervisor import Supervisor
+from climbcv.wiring import resolve
 
 pytestmark = pytest.mark.slow
 
@@ -400,3 +400,142 @@ def test_crash_detail_is_the_reason_not_a_restart_timestamp(tmp_path):
         assert state.restart_at >= 0.0
     finally:
         sup.stop()
+
+
+# ---------------------------------------------------------------- unit tests for runtime module
+
+
+def _make_spec(publishes=("frame",), subscribes=()):
+    """Build a minimal ChildSpec-like object for _Runtime unit tests."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        plugin_id="test.plugin",
+        publishes=publishes,
+        subscriptions=tuple((t, False, 4, "handler") for t in subscribes),
+        config={},
+        config_dir=None,
+        data_dir="/tmp/test_runtime",
+    )
+
+
+def test_timeout_until_returns_heartbeat_half_when_no_timers():
+    """Without any timers, _timeout_until should cap at HEARTBEAT/2 to keep liveness alive."""
+    from climbcv.runtime import _timeout_until, _HEARTBEAT_INTERVAL_S
+
+    result = _timeout_until({}, {}, time.monotonic())
+    assert result == _HEARTBEAT_INTERVAL_S / 2
+
+
+def test_timeout_until_returns_time_to_nearest_timer():
+    from climbcv.runtime import _timeout_until
+
+    now = time.monotonic()
+    next_due = {"pump": now + 0.1, "heartbeat": now + 1.0}
+    result = _timeout_until(next_due, {"pump": 0.1, "heartbeat": 1.0}, now)
+    assert 0.0 <= result <= 0.5 + 0.1   # bounded between 0 and heartbeat/2
+
+
+def test_timeout_until_clamps_to_zero_when_overdue():
+    from climbcv.runtime import _timeout_until
+
+    now = time.monotonic()
+    # Timer is already overdue
+    next_due = {"pump": now - 5.0}
+    result = _timeout_until(next_due, {"pump": 0.1}, now)
+    assert result == 0.0
+
+
+def test_drain_returns_false_when_all_queues_empty():
+    """_drain on all-empty queues returns False and sleeps for timeout."""
+    import queue
+    from climbcv.runtime import _drain
+
+    q = queue.Queue()
+    class DummySpec:
+        subscriptions = ()
+    class DummyRt:
+        spec = DummySpec()
+        
+    result = _drain({"frame": q}, {}, object(), DummyRt(), timeout=0.0)
+    assert result is False
+
+
+def test_drain_dispatches_messages_to_handlers():
+    """_drain should call the correct handler for each topic."""
+    import queue
+    from unittest.mock import MagicMock
+    from climbcv.contracts import Meta
+    from climbcv.runtime import _drain, _Runtime
+
+    spec = _make_spec(publishes=(), subscribes=("frame",))
+    shutdown = MagicMock()
+    shutdown.is_set.return_value = False
+    rt = _Runtime(spec, {}, MagicMock(), shutdown, MagicMock())
+
+    meta = Meta("frame", "src", 0, 0)
+    payload = "test_payload"
+    q = queue.Queue()
+    q.put((meta, payload))
+
+    received = []
+    handlers = {"frame": [lambda inst, p, m: received.append((p, m))]}
+    result = _drain({"frame": q}, handlers, object(), rt, timeout=0.0)
+    assert result is True
+    assert received == [(payload, meta)]
+
+
+def test_runtime_publish_raises_on_undeclared_topic():
+    """Publishing a topic not listed in spec.publishes should raise PluginContractError."""
+    from unittest.mock import MagicMock
+    from climbcv.runtime import _Runtime
+    from climbcv.plugin import PluginContractError
+
+    spec = _make_spec(publishes=("frame",))
+    shutdown = MagicMock()
+    shutdown.is_set.return_value = False
+    rt = _Runtime(spec, {}, MagicMock(), shutdown, MagicMock())
+
+    with pytest.raises(PluginContractError, match="did not declare it"):
+        rt.publish("undeclared.topic", "payload")
+
+
+def test_runtime_publish_puts_on_all_subscriber_queues():
+    """publish() should enqueue the payload on every registered out-queue for that topic."""
+    import queue
+    from unittest.mock import MagicMock
+    from climbcv.runtime import _Runtime
+
+    spec = _make_spec(publishes=("frame",))
+    q1, q2 = queue.Queue(maxsize=4), queue.Queue(maxsize=4)
+    out_queues = {"frame": [q1, q2]}
+    shutdown = MagicMock()
+    shutdown.is_set.return_value = False
+    rt = _Runtime(spec, out_queues, MagicMock(), shutdown, MagicMock())
+
+    rt.publish("frame", "hello")
+    assert not q1.empty()
+    assert not q2.empty()
+    _, payload1 = q1.get_nowait()
+    _, payload2 = q2.get_nowait()
+    assert payload1 == payload2 == "hello"
+
+
+def test_runtime_publish_drops_newest_when_queue_full():
+    """When a subscriber queue is full, the new message is silently dropped (no lock contention)."""
+    import queue
+    from unittest.mock import MagicMock
+    from climbcv.runtime import _Runtime
+
+    spec = _make_spec(publishes=("frame",))
+    q = queue.Queue(maxsize=1)
+    q.put(("sentinel_meta", "old_payload"))  # fill the queue
+
+    shutdown = MagicMock()
+    shutdown.is_set.return_value = False
+    rt = _Runtime(spec, {"frame": [q]}, MagicMock(), shutdown, MagicMock())
+
+    rt.publish("frame", "new_payload")  # must not raise or deadlock
+
+    # The old payload should still be there (drop-newest strategy)
+    _, payload = q.get_nowait()
+    assert payload == "old_payload"

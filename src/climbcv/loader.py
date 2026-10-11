@@ -21,7 +21,7 @@ from . import PLUGIN_API_VERSION
 from .config import LoadedConfig
 from .manifest import MANIFEST_FILENAME, Manifest, ManifestError, parse_manifest
 
-__all__ = ["Skipped", "Discovery", "discover", "LoaderError"]
+__all__ = ["Discovery", "LoaderError", "Skipped", "discover"]
 
 
 class LoaderError(Exception):

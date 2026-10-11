@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.plugin import (  # noqa: E402
+from climbcv.plugin import (
     RESERVED_NAMES,
     Finished,
     Plugin,
@@ -24,7 +24,6 @@ from climbcv.plugin import (  # noqa: E402
     every,
     subscribe,
 )
-
 
 # ---------------------------------------------------------------- decorators
 

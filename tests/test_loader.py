@@ -9,14 +9,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.config import (  # noqa: E402
+from climbcv.config import (
     FRAMEWORK_DEFAULTS,
     ConfigError,
     check_against_plugins,
     load_config,
 )
-from climbcv.loader import LoaderError, discover  # noqa: E402
-from climbcv.manifest import MANIFEST_FILENAME  # noqa: E402
+from climbcv.loader import LoaderError, discover
+from climbcv.manifest import MANIFEST_FILENAME
 
 
 def plugin_dir(root: Path, pid: str, *, api="1.0", platforms=None, entry="plugin:P",

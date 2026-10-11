@@ -13,12 +13,8 @@ the process that draws it rather than being pickled across a boundary.
 
 from __future__ import annotations
 
-import time
-
-import numpy as np
-
 from climbcv import Plugin, every, subscribe
-from climbcv.rendering import plot_world_landmarks
+from climbcv.rendering import is_pose_fresh, plot_world_landmarks
 
 VISIBILITY, X, Y, Z = 0, 1, 2, 3
 
@@ -52,7 +48,14 @@ class PosePlot(Plugin):
 
         self._plt = plt
         self._limit = float(self.config.get("limit_m", 1.0))
+        self._max_pose_age_ms = float(self.config.get("max_pose_age_ms", 250))
+        self._min_visibility = float(self.config.get("min_visibility", 0.5))
+        if not 0 < self._max_pose_age_ms < float("inf"):
+            raise ValueError("max_pose_age_ms must be positive and finite")
+        if not 0 <= self._min_visibility <= 1:
+            raise ValueError("min_visibility must be between 0 and 1")
         self._pose = None
+        self._last_drawn_pose = None
         self._drawn = 0
 
         plt.ion()
@@ -60,12 +63,12 @@ class PosePlot(Plugin):
         self._ax = self._fig.add_subplot(111, projection="3d")
         self._ax.view_init(
             elev=float(self.config.get("elev", -75)),
-            azim=float(self.config.get("azim", -90)),
+            azim=float(self.config.get("azim", 90)),
         )
         self._fig.tight_layout()
         self._fig.show()
 
-        self.set_interval(self.redraw, 1.0 / float(self.config.get("redraw_hz", 15)))
+        self.set_interval(self.redraw, 1.0 / float(self.config.get("redraw_hz", 60)))
         self.log.info("3D plot window open (backend %s)", backend)
 
     @subscribe("pose.smoothed")
@@ -77,27 +80,35 @@ class PosePlot(Plugin):
     @every(0)
     def redraw(self) -> None:
         pose = self._pose
-        if pose is None:
-            # Still pump the event loop, or the window is unresponsive before the first pose.
+        if not is_pose_fresh(pose, self._max_pose_age_ms):
+            pose = None
+            self._pose = None
+
+        # Check expiry before this shortcut, even when the source has stopped entirely.
+        if self._last_drawn_pose is pose:
             self._plt.pause(0.001)
             return
 
-        # The original's grouping: one scatter for the face and six polylines for the limbs,
-        # shoulders and waist. The previous version issued one ax.plot per skeleton edge --
-        # thirty-five calls a redraw -- which is what made this window stutter. matplotlib 3D
-        # is the expensive thing on screen, so the call count is the whole game.
-        if plot_world_landmarks(self._ax, pose.world, self._limit):
+        self._last_drawn_pose = pose
+        visible = plot_world_landmarks(
+            self._ax, pose.world if pose is not None else None,
+            self._limit, self._min_visibility,
+        )
+        if visible:
             self._ax.set_title(f"frame {pose.frame_seq}   {pose.topology}")
-            self._fig.canvas.draw_idle()
             self._drawn += 1
+        else:
+            self._ax.set_title("no recent pose" if pose is None else "no visible landmarks")
+        self._fig.canvas.draw_idle()
 
         # pause() both flushes the draw and services the GUI event loop -- matplotlib's
         # equivalent of cv2.waitKey, and leaving it out is the same bug.
         self._plt.pause(0.001)
 
     def teardown(self) -> None:
+        """Close the matplotlib figure and log how many frames were rendered."""
         self.log.info("rendered %d 3D frames", self._drawn)
-        try:
-            self._plt.close(self._fig)
-        except Exception:
-            pass
+        # We explicitly DO NOT call self._plt.close(self._fig) here. When using the 'macosx'
+        # backend in a multiprocessing child process, calling close() during shutdown often
+        # triggers a native segfault because the Cocoa event loop is in an unstable state.
+        # The OS will reap the window cleanly when the process exits.

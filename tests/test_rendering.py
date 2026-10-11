@@ -10,12 +10,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.contracts import Frame, PoseFrame  # noqa: E402
-from climbcv.rendering import (  # noqa: E402
+from climbcv.contracts import Frame, PoseFrame
+from climbcv.rendering import (
     draw_body_tilt,
     draw_pose_overlay,
     plot_world_landmarks,
@@ -104,8 +103,8 @@ def test_plot_world_landmarks_uses_seven_calls_not_one_per_edge():
         def set_xlim3d(self, *a): pass
         def set_ylim3d(self, *a): pass
         def set_zlim3d(self, *a): pass
-        def plot(self, *a, **k): self.plots += 1
-        def scatter(self, *a, **k): self.scatters += 1
+        def plot(self, *a, **k): self.plots += 1; return [object()]
+        def scatter(self, *a, **k): self.scatters += 1; return object()
 
     ax = FakeAx()
     assert plot_world_landmarks(ax, pose(1).world) is True

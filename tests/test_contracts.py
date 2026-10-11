@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.contracts import (  # noqa: E402
+from climbcv.contracts import (
     CONTRACT_TYPES,
     STATUS_STATES,
     TOPOLOGY_SIZES,
@@ -33,7 +33,6 @@ from climbcv.contracts import (  # noqa: E402
     Status,
     _declared_array_fields_are_complete,
 )
-
 
 # --------------------------------------------------------------------------- samples
 

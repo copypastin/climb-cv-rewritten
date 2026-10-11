@@ -180,6 +180,18 @@ the same skeleton instead of hardcoding a private copy.
 
 ## 4. Configuration
 
+The live overlay and 3D plot expire poses 250 ms after capture, including when tracking
+stops producing messages. The overlay requires the cached frame's sequence, capture time,
+and mirror orientation to match the pose; otherwise it shows live video without a skeleton.
+Set `max_pose_age_ms` in `core.exo_live` or `pose_plot` to adjust the expiry for those
+plugins. The host window in `02_live_webcam.py` uses the same 250 ms default.
+
+The 3D plot hides joints below `min_visibility` (default `0.5`) and breaks limb lines at
+hidden joints. The smoother passes visibility through immediately and resets its coordinate
+history after a tracking gap longer than `reset_after_ms` (default `250`, configured in
+`core.smooth_oneeuro`), a timestamp reset, or an orientation change. These settings prevent
+stale drawings; they do not calibrate the hip-relative pose into gym coordinates.
+
 `climbcv.toml` in this folder is the same setup as `01_video_file.py` passes as a dict — one
 file, sectioned by plugin id. Each plugin receives its section as a plain dict, passed through
 byte for byte with no validation. That is deliberate: it is one place to see and change

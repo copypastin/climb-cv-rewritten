@@ -1,0 +1,19 @@
+[plugin]
+id                = "com_overlay"
+version           = "1.0.0"
+api_version       = "1.0"
+entry             = "plugin:CoMOverlay"
+name              = "Center of Mass Overlay"
+description       = "Draws a target reticle over the climber's Center of Mass on the video feed."
+author            = "climb-cv"
+
+[[subscribes]]
+topic = "frame"
+mode = "latest"
+
+[[subscribes]]
+topic = "metrics.com"
+mode = "latest"
+
+[config]
+keys = ["window_name", "radius"]

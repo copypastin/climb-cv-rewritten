@@ -19,9 +19,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.app import ClimbCV, bundled_root  # noqa: E402
-from climbcv.contracts import PoseFrame  # noqa: E402
-from climbcv.manifest import MANIFEST_FILENAME, parse_manifest  # noqa: E402
+from climbcv.app import ClimbCV, bundled_root
+from climbcv.contracts import PoseFrame
+from climbcv.manifest import MANIFEST_FILENAME, parse_manifest
 
 pytestmark = pytest.mark.slow
 

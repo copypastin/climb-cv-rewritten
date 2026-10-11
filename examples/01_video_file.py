@@ -22,7 +22,7 @@ from pathlib import Path
 # you would just `from climbcv import ClimbCV`.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from climbcv.app import ClimbCV  # noqa: E402
+from climbcv.app import ClimbCV
 
 HERE = Path(__file__).resolve().parent
 
@@ -77,13 +77,15 @@ def main() -> None:
     # plot, body_tilt -- knows or cares which of these produced the pose.
     plugins = {
         "core.capture": {"source": str(video), "mirror": False, "fps": 30, "loop": loop},
-        "core.pose_mediapipe": {"enabled": not synthetic_pose, "delegate": "cpu"},
+        "core.pose_mediapipe": {"enabled": not synthetic_pose, "delegate": "gpu"},
         "demo_pose": {"enabled": synthetic_pose, "cycle_frames": 45},
         "core.smooth_oneeuro": {"min_cutoff": 1.0, "beta": 0.3},
         "brightness": {"dark_below": 60.0, "report_every_s": 5.0},
         "body_tilt": {"min_visibility": 0.4},
-        "exo_live": {"enabled": display, "scale": 1.0, "draw_hz": 30},
-        "pose_plot": {"enabled": display, "redraw_hz": 10, "limit_m": 1.0, "trail": 0},
+        "math.center_of_mass": {},
+        "com_overlay": {},
+        "core.exo_live": {"enabled": display, "scale": 1.0, "draw_hz": 30},
+        "pose_plot": {"enabled": display, "redraw_hz": 60, "limit_m": 1.0, "trail": 0},
     }
 
     app = ClimbCV({
